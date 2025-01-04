@@ -1,0 +1,1600 @@
+---
+title: "Cancer epidemiology in Geneva's canton"
+subtitle: "Incidence and mortality, 2016-2020"
+author: "Fournier Evelyne"
+date: "`r Sys.Date()`"
+output: rmdformats::readthedown
+---
+
+```{r package_installation, echo=F, EVAL=T, warning = FALSE,  message=FALSE }
+# To readers: reading guidelines  
+# To compute standardised incidence and mortality rates, several datasets are needed : 
+#      - one dataset containing individual incident cases with age at incidence, gender, year of incidence, type of cancer (ICD10). This dataset is the result of the merging of 2 other datasets extracted from the registry database (table a_patient that contains gender and a_tumor that contains age at incidence, year of incidence, type of cancer (ICD10))
+#      - one dataset containing individual death cases  with age at death, gender, year of death, type of cancer (ICD10), 
+#      - one dataset with the Geneva population at risk by gender, age and year, 
+#      - one dataset with the reference population (Waterhouse et al., 1976)
+
+
+# The beginning of the programm will load and clean those dataframes. Individual incidence and death data will be aggregated to obtain the number of incident cases and number of death by cancer type and gender.
+# They will be combined in a final dataframe that will contain the number incident,death cases, at-risk population for each stratum of age and sex, for each tumor type. Age will be considered in 5 years categories going from 0 to 85 and older. Gender is coded 1 for male and 2 for women. The period analysed is 2016-2020.
+
+# Because all these data manipulation can easily lead to errors, numerous checks are performed all along the data wrangling.
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+## Packages ----
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Some of these packages were loaded when trying to solve some issues but are not finaly used
+# Tex packages are left because the final version of this document (outside Graph project) will be pdf
+
+
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(readr, #read rectangular data  from delimited files
+               tidyverse, # data management and visualization
+               here, # locate files
+               janitor, # data analysis utilities
+               knitr, # gives users full control of the output
+               patchwork, # combining plots
+               styler, # formats the code according to the tidyverse style guide 
+               RODBC, # enables data-extraction using an ODBC connection
+               haven, # adds labels values to a numeric variable
+               flextable,
+               flexdashboard,
+               prettydoc,
+               dplyr,
+               frailtypack, # needed for dsr, for frailty models
+               openxlsx, # TO EXPORT TO AN EXCEL FILE
+               expss, #simplify variable labels usage
+               gridExtra, # to graphs 2 graphs side by side
+               grid, # to add title and captions to graphs combined with gridExtra
+               cowplot, # another way to arrage plots with title and captions
+               kableExtra, # to produce tables
+               htmlTable, # to produce tables
+               ggstatsplot, # for pie charts
+               rmdformats, # For different HTML output - on test
+               DT, # I would like to add a button to make the dataframe downloadable
+               htmltools 
+              )
+
+# dsr package : direct standardisation package
+#dsr package has been removed from cran and needs to be installed differently
+#https://cran.r-project.org/src/contrib/Archive/dsr/
+if(!require(dsr))  install.packages(here("/package/dsr_0.2.2.tar.gz", repos = NULL, type = "source"))
+pacman::p_load(dsr)
+
+if(!require(tinytex)) tinytex::install_tinytex()
+
+```
+
+```{r setup, include = FALSE, warning = FALSE,  message=FALSE }
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+## Chunk options : no display of code, its output and warnings in final document
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+knitr::opts_chunk$set(error = T)
+
+```
+
+```{r incidence_data_extraction, include = FALSE, warning = FALSE,  message=FALSE  }
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+## Extraction of tumor and patients characteristics from ODBC nicer_64 ----
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# I save all my file as csv and import them after because i want to be able to work from my laptop and I do't have access to our secured database outside the registry
+# Connection to ODBC connector of Geneva Cancer Registry MySQL database
+
+
+conn <- odbcConnect("nicer_64")
+
+# ------------------------ Patient's characteristics load, clean and filtering ----
+# MySQL select statement extracting patient table fields
+a_patient <- "select pid, sexe as gender from a_patient"
+patient_raw <- sqlQuery(conn, a_patient)
+
+# Patient filtering : Only patients with known gender
+patient <- patient_raw %>% 
+  filter(gender==1 | gender==2) %>% 
+  mutate(gender=as.factor(gender))
+# Check
+tabyl(patient,gender)
+
+write_csv(patient, here("data/patient.csv"))
+
+# ------------------------ Tumor load, clean and filtering
+# Only cases from 2016 to 2020
+# Only GE canton resident (resident_status= GE)
+# Only validated tumor (tum_status= 3)
+# Only invasive cancers (beginning with C in icd10)
+# Without non melanoma skin cancers C44
+# Deletion of intermediate variables
+
+# pid and tid are respectively patient and tumor ID
+
+a_tumor <- "select pid,tid, incidence_age as age, incidence_year as year, icd10, resident_status, tum_status,INCIDENCE_CITY_ID from a_tumor"
+tumor_raw <- sqlQuery(conn, a_tumor) %>% 
+  mutate(year=as.integer(year),
+         age=as.integer(age),
+         pid=as.integer(pid),
+         tid=as.integer(tid),
+         tum_status=as.integer(tum_status))
+  
+ tumor<- tumor_raw %>% 
+  filter(year>=1971 & year<2021 &
+           resident_status=="GE" &
+           tum_status==3) %>% 
+  mutate(icd10 = substr(icd10,1,3),
+         behavior=substr(icd10,1,1)) %>% 
+  filter(behavior=="C") %>%
+  filter(icd10!="C44") %>% 
+  dplyr::select(pid, tid, age, year, icd10,INCIDENCE_CITY_ID)  # Explicitly call select() from dplyr
+# there use to be a problem with the error message below, it was solved by explicitily calling dplyr select function
+#  Error in select(., pid, tid, age, year, icd10) : 
+#   unused arguments (pid, tid, age, year, icd10)
+
+                 
+                  
+# ------------------------ Export tumor file to enable me to work on my lapt 
+
+write_csv(tumor, here("data/tumor.csv"))
+               
+
+# Check     
+tabyl(tumor,icd10)
+
+
+# Extraction of geographic information
+cities_db <- "select id as INCIDENCE_CITY_ID, NPA, GNR, EXP, DATE_FROM, DATE_TO, TEXT_FR, text_en  from cities"
+cities <- sqlQuery(conn, cities_db)
+
+write_csv(cities, here("data/cities.csv"))
+  
+
+
+
+# Close the ODBC connection when done fetching data
+odbcClose(conn)
+
+
+# import all files and create data frame
+tumor<-read_csv(here("data/tumor.csv") , show_col_types = FALSE)
+ 
+cities<-read_csv(here("data/cities.csv") , show_col_types = FALSE)
+ patient<-read_csv(here("data/patient.csv") , show_col_types = FALSE)
+ 
+  
+
+# Generation of a variable age_category, using the cut function and including the left endpoint of each interval and excluding the right endpoint thanks to some parameters
+# setting right = FALSE enables the left endpoint of each interval (e.g., 0, 5, 10, etc.) to be included in the category, while the right endpoint (e.g., 5, 10, 15, etc.) is excluded
+
+# Define custom labels for each category
+labels <- c("0 to 4", "5 to 9", "10 to 14", "15 to 19", "20 to 24", "25 to 29", "30 to 34", "35 to 39", "40 to 44", "45 to 49", "50 to 54", "55 to 59", "60 to 64", "65 to 69", "70 to 74", "75 to 79", "80 to 84", "85 and older")
+
+# Age category definition and label attribution
+tumor <- tumor %>%
+  mutate(age_category = cut(age, breaks = c(0, seq(5, 85, by = 5), 150), right = FALSE, labels = labels))
+
+
+# Check 1
+tabyl(tumor,age_category) 
+
+# Check 2 : min and max of each category, to check the left and right endpoints
+check<-tumor %>% 
+  group_by(age_category) %>% 
+  summarise(min_age=min(age),
+            max_age=max(age))
+check 
+
+
+#-------------------------------------------               PATIENT AND TUMOR JOINED TOGETHER
+# All statistics will be performed by gender
+# Gender variable needs to be imported into tumor dataframe
+# Datasets merging based on the common patient identifier "pid" (inner join)
+base_registre <- inner_join(patient, tumor, by = "pid") 
+
+#check
+base_registre %>% 
+tabyl(icd10,gender)
+
+
+# Generation of tumor type
+# The 1st plot that will be graphed will contain the 6 major tumor sites per gender
+# We need to define tumor types
+# We 1st define each tumor type
+
+base_registre1 <- base_registre %>% 
+  mutate(gender=as.factor(gender),
+        tumor_category="",
+         tumor_category=case_when(
+           icd10 %in% c("C00", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09",
+                        "C10", "C11", "C12", "C13", "C14") ~ "C00-C14",
+           icd10 == "C15" ~ "C15",
+           icd10 == "C16" ~ "C16",
+           icd10 == "C17" ~ "C17",
+           icd10 %in% c("C18","C19","C20") ~ "C18-C20",
+           icd10 == "C21" ~ "C21",
+           icd10 == "C22" ~ "C22",
+           icd10  %in% c("C23","C24") ~ "C23,C24",
+           icd10 == "C25" ~ "C25",
+           icd10 == "C26" ~ "C26,C80",
+           icd10 == "C32" ~ "C32",
+           icd10  %in% c("C33","C34") ~ "C33-C34",
+           icd10 == "C38" ~ "C38,C45",
+           icd10  %in% c("C40","C41") ~ "C40,C41",
+           icd10 == "C43" ~ "C43",
+           icd10 == "C45" ~ "C38,C45",
+           icd10  %in% c("C47","C49") ~ "C47,C49",
+           icd10 == "C50" ~ "C50",
+           icd10 == "C53" ~ "C53",
+           icd10 %in% c("C54", "C55") ~ "C54,C55",
+           icd10 %in% c("C56", "C57") ~ "C56,C57",
+           icd10 == "C61" ~ "C61",
+           icd10 == "C62" ~ "C62",
+           icd10 %in% c("C64") ~ "C64",
+           icd10 %in% c("C65", "C66", "C68") ~ "C65-C66,C68",
+           icd10 == "C67" ~ "C67",
+           icd10 %in% c("C70", "C71", "C72") ~ "C70-C72",
+           icd10 == "C73" ~ "C73",
+           icd10 == "C80" ~ "C26,C80",
+           icd10 == "C81" ~ "C81",
+           icd10  %in% c("C82", "C83", "C84","C85","C96") ~ "C82-85, C96",
+           icd10 == "C90" ~ "C90",
+           icd10 == "C91" ~ "C91",
+           icd10 == "C92" ~ "C92",
+           icd10  %in% c("C93","C94","C95") ~ "C93-95",
+           TRUE ~ "Autres*")
+        periode=)
+
+# Checks
+tabyl(base_registre1,tumor_category)
+
+base_registre1 %>% 
+  filter(tumor_category=="Autres*") %>% 
+  tabyl(icd10)
+
+# Creation of a dataframe containing the number of cases per year, gender and cancer type, including empty categories
+# To check every step of the procedure, computation of the total number of cases
+check<-base_registre1 %>% 
+  group_by(gender) %>% 
+  summarize(count=n())
+ check
+  
+   #gender count
+#   <int> <int>
+#1      1  6769
+#2      2  6358
+#    6769+6358
+# [1] 13127
+
+incident_cases<-base_registre1 %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category),
+         tumor_category=as.factor(tumor_category)) %>% 
+  group_by(gender,age_category,tumor_category, .drop=FALSE) %>% 
+  summarize(nb_tumors=n()) 
+
+# check 1, 1 row per age cat
+check<-incident_cases %>% 
+filter(tumor_category=="C50" & gender==1) %>% 
+  arrange(tumor_category,  gender, age_category, .by.group=T) %>% 
+  tabyl(age_category)
+check
+
+
+
+# check2 : 19 unique levels
+unique(incident_cases$age_category) 
+
+# Check 3 : total cases must remain the same - still having gender 0 and 9 with 0 cases
+check<-incident_cases %>% 
+group_by(gender, .drop=FALSE) %>% 
+  summarize(nb_total_tum=sum(nb_tumors))
+check
+#6769 6358
+
+# CHECK 4 : TO KEEP TRACK OF THE NUMBER OF CASES EXPECTED WHEN COMPUTING STANDARDISED RATES (because 1st had strange results)
+check<-base_registre1 %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category),
+         tumor_category=as.factor(tumor_category)) %>% 
+  group_by(gender,tumor_category, .drop=FALSE) %>% 
+  summarize(nb_tumors=n()) 
+write.xlsx(check, file = here("results/number_of_incident_cases_by_gender_tumor_type.xlsx"), rowNames = TRUE)
+
+# Creation of the localisation "total tumors", for future tables
+# Total tumor is the total number of tumors per age category, gender and year (independently of tumor type)
+incident_cases_total<-base_registre1 %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category)) %>% 
+  group_by(gender,age_category, .drop=FALSE) %>% 
+  summarize(nb_tumors=n()) %>% 
+  mutate(tumor_category="C00-C95", # Generation of modality total tumor
+         tumor_category=as.factor(tumor_category)) 
+
+# Check 1 : 18 unique levels
+unique(incident_cases_total$age_category)
+
+# Check 2 : presence of tumor_category variable with C00-C95 content, 1 row
+tabyl(incident_cases_total,tumor_category)
+
+
+# ------------------------------------ TOTAL TUMOR CATEGORY ADDED TO DETAILED TUMOR CATEGORY DATASET
+# Append the datasets using rbind
+incident_cases_final <- rbind(incident_cases, incident_cases_total)
+
+# View the appended dataset and visualy check presence of C00-C95 tumors
+tabyl(incident_cases_final,tumor_category)
+# 36 rows per tumor type : 2 gender and 18 age categories
+```
+
+```{r mortality_importation , include = FALSE, warning = FALSE,  message=FALSE }
+#--------------------------------------------------LOAD AND CLEAN MORTALITY DATA
+
+# Load and clean death counts
+# show_col_types = FALSE to remove an annoying message "Specify the column types or set `show_col_types = FALSE` to quiet this message"
+library(readr)
+mortality_raw <- read_delim(here("data/Mortality_data_1970_2020.csv"), delim = ";", escape_double = FALSE, trim_ws = TRUE,show_col_types = FALSE)
+
+
+mortality <-mortality_raw %>% 
+  mutate(year=as.integer(year),
+         age=as.integer(age),
+         icd10 = substr(icd10,1,3), # C508 becomes C50
+         behavior=substr(icd10,1,1)) %>% 
+  filter(behavior=="C") %>%
+  filter(icd10!="C44") %>%  # skin cancer excluded, melanoma included
+  filter(year>=2016 & year<=2020) %>% 
+  dplyr::select(-fichier)  # Explicitly call select() from dplyr
+
+
+#Now mortality dataframe  has year, gender, age and icd10 variables, exactly as the incidence dataframe
+
+# Check     
+tabyl(mortality,year)
+
+# Generation of a variable age_category, using the cut function and including the left endpoint of each interval and excluding the right endpoint thanks to some parameters
+# setting right = FALSE enables the left endpoint of each interval (e.g., 0, 5, 10, etc.) to be included in the category, while the right endpoint (e.g., 5, 10, 15, etc.) is excluded
+# it seems age categories are not orderered in the correct way so they are forced into the given order
+
+
+# Age category definition and label attribution (labels are defined previously)
+mortality <- mortality %>%
+  mutate(age_category = cut(age, breaks = c(0, seq(5, 85, by = 5), 150), right = FALSE, labels = labels))
+
+
+# Checks 
+unique(mortality$age_category) # 19 levels -- Good !
+tabyl(mortality,age_category) 
+
+
+
+# Generation of tumor type for the mortality file
+
+mortality1 <- mortality %>% 
+  mutate(tumor_category="",
+         tumor_category=case_when(
+           icd10 %in% c("C00", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09",
+                        "C10", "C11", "C12", "C13", "C14") ~ "C00-C14",
+           icd10 == "C15" ~ "C15",
+           icd10 == "C16" ~ "C16",
+           icd10 == "C17" ~ "C17",
+           icd10 %in% c("C18","C19","C20") ~ "C18-C20",
+           icd10 == "C21" ~ "C21",
+           icd10 == "C22" ~ "C22",
+           icd10  %in% c("C23","C24") ~ "C23,C24",
+           icd10 == "C25" ~ "C25",
+           icd10 == "C26" ~ "C26,C80",
+           icd10 == "C32" ~ "C32",
+           icd10  %in% c("C33","C34") ~ "C33-C34",
+           icd10 == "C38" ~ "C38,C45",
+           icd10  %in% c("C40","C41") ~ "C40,C41",
+           icd10 == "C43" ~ "C43",
+           icd10 == "C45" ~ "C38,C45",
+           icd10 %in% c("C47","C49") ~ "C47,C49",
+           icd10 == "C50" ~ "C50",
+           icd10 == "C53" ~ "C53",
+           icd10 %in% c("C54", "C55") ~ "C54,C55",
+           icd10 %in% c("C56", "C57") ~ "C56,C57",
+           icd10 == "C61" ~ "C61",
+           icd10 == "C62" ~ "C62",
+           icd10 %in% c("C64", "C65", "C66", "C68") ~ "C64-C66,C68",
+           icd10 == "C67" ~ "C67",
+           icd10 %in% c("C70", "C71", "C72") ~ "C70-C72",
+           icd10 == "C73" ~ "C73",
+           icd10 == "C80" ~ "C26,C80",
+           icd10 == "C81" ~ "C81",
+           icd10  %in% c("C82", "C83", "C84","C85","C96") ~ "C82-85, C96",
+           icd10 == "C90" ~ "C90",
+           icd10 == "C91" ~ "C91",
+           icd10 == "C92" ~ "C92",
+           icd10  %in% c("C93","C94","C95") ~ "C93-95",
+           TRUE ~ "Autres*"))
+
+# Checks
+tabyl(mortality1,tumor_category)
+
+mortality1 %>% 
+  filter(tumor_category=="Autres*") %>% 
+  tabyl(icd10)
+
+
+# Creation of a dataframe containing the number of cases per year, gender and cancer type, including empty categories
+# To check every step of the procedure, computation of the total number of cases and see if it is consistant at the end of the process
+check<-mortality1 %>% 
+  group_by(gender) %>% 
+  summarize(count=n())
+ check
+  # A tibble: 2 × 2
+ # gender count
+#   <dbl> <int>
+#1      1  2369
+#2      2  2245
+
+mortality_cases<-mortality1 %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category),
+         tumor_category=as.factor(tumor_category)) %>% 
+  group_by(gender,age_category,tumor_category, .drop=FALSE) %>% 
+  summarize(nb_death=n()) 
+
+# check 1, 1 row per age cat
+check<-mortality_cases %>% 
+filter(tumor_category=="C50" & gender==1) %>% 
+  arrange(tumor_category,  gender, age_category, .by.group=T) %>% 
+  tabyl(age_category)
+check
+
+# Check 2 : total cases must remain the same 
+check<-mortality_cases %>% 
+group_by(gender, .drop=FALSE) %>% 
+  summarize(nb_total_death=sum(nb_death))
+check
+#2369 2245
+
+
+# CHECK 3 : TO KEEP TRACK OF THE NUMBER OF death EXPECTED WHEN COMPUTING STANDARDISED RATES (because 1st had strange results)
+check<-mortality1 %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category),
+         tumor_category=as.factor(tumor_category)) %>% 
+  group_by(gender,tumor_category, .drop=FALSE) %>% 
+  summarize(nb_death=n()) 
+write.xlsx(check, file = here("results/number_of_mortality_cases_by_gender_tumor_type.xlsx"), rowNames = TRUE)
+
+
+# Creation of the localisation "total tumors", for future tables
+# Total tumor is the total number of tumors per age category, gender and year (independently of tumor type)
+mortality_cases_total<-mortality1 %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category)) %>% 
+  group_by(gender, age_category, .drop=FALSE) %>% 
+  summarize(nb_death=n()) %>% 
+  mutate(tumor_category="C00-C95", # Generation of modality total tumor
+         tumor_category=as.factor(tumor_category)) 
+
+# Check 1 : 1 row per gender and age category 
+tabyl(mortality_cases_total,age_category,gender)
+# Check 2 : presence of tumor_category variable with C00-C95 modality, 38 rows
+tabyl(mortality_cases_total,tumor_category)
+
+
+# Append the datasets using rbind
+mortality_cases_final <- rbind(mortality_cases, mortality_cases_total)
+
+# Check 3 : View the appended dataset and visualy check presence of C00-C95 tumors and 38 rows for every tumor type
+tabyl(mortality_cases_final,tumor_category)
+
+
+```
+
+```{r population_data , include = FALSE, warning = FALSE,  message=FALSE  }
+# ---------------------------------------------------POPULATION AT RISK
+# Load and clean populations data
+
+
+population_raw <- read_delim(here("data/pop_GE_1970_2020_final.csv"), delim = ";", escape_double = FALSE, trim_ws = TRUE,show_col_types = FALSE)
+# population variables : age, year, gender, pop
+# population_raw is already an agregated dataset and pop contains the number of Geneva residents per age, year, gender
+
+population <-population_raw %>% 
+  mutate(year=as.integer(year),
+         age=as.integer(age)) %>% 
+  filter(year>=2016 & year<=2020) %>% 
+   mutate(age_category = cut(age, breaks = c(0, seq(5, 85, by = 5), 150), right = FALSE, labels = labels)) 
+ 
+
+
+#Now population dataframe  has year, gender, age category variables similarly to the incidence and the mortality dataframe
+
+# Check     
+tabyl(population,year)
+
+# Creation of a dataframe containing the number of cases per year, gender and cancer type, including empty categories
+# To check every step of the procedure, computation of the total number of cases and see if it is consistant at the end of the process
+check<-population %>% 
+  group_by(gender) %>% 
+  summarize(sum_pop=sum(pop))
+ check
+# A tibble: 2 × 2
+ #gender som_pop
+#   <dbl>   <dbl>
+#1      1 1212089
+#2      2 1288027
+
+ # Compute the sum of the population for the 5-year period, by age category and gender
+population_ge<-population %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category)) %>% 
+  group_by(gender,age_category, .drop=FALSE) %>% 
+  summarize(sum_pop=sum(pop)) %>% 
+  rename(pop=sum_pop)
+
+# check 1, 1 row per cell (1 age cat by sex)
+check<-population_ge %>% 
+tabyl(age_category, gender)
+check
+
+# check 2, same total population as before group_by
+check<-population_ge %>% 
+group_by(gender) %>% 
+  summarize(total_pop=sum(pop)) 
+check
+
+# A tibble: 2 × 2
+#  gender total_pop
+#  <fct>      <dbl>
+#1 1        1212089
+#2 2        1288027
+
+
+
+# check 3, save population 
+check<-population %>% 
+  mutate(gender=as.factor(gender),
+         age_category=as.factor(age_category)) %>% 
+  group_by(gender, .drop=FALSE) %>% 
+  summarize(sum_pop=sum(pop)) %>% 
+  rename(pop=sum_pop)
+write.xlsx(check, file = here("results/pop_by_gender.xlsx"), rowNames = TRUE)
+
+
+
+```
+
+```{r reference_population , include = FALSE, warning = FALSE,  message=FALSE }
+
+# Load and clean reference population  
+ref_europe_1976 <- read_delim(here("data/european_standard_population_1976.csv"), delim = ";", escape_double = FALSE, trim_ws = TRUE, show_col_types = FALSE)
+# population variables : age, year, gender, pop
+# population_raw is already an agregated dataset and pop contains the number of Geneva residents per age, year, gender
+
+ref_europe_1976 <-ref_europe_1976 %>% 
+ mutate(age_category = cut(clage, breaks = c(0, seq(5, 85, by = 5), 150), right = FALSE, labels = labels),
+        gender=as.factor(gender)) %>% 
+ dplyr::select(gender,age_category,pop)
+
+# check
+unique(ref_europe_1976$age_category) # 18 levels
+
+```
+
+```{r final_merging , include = FALSE, warning = FALSE,  message=FALSE }
+# Merging of the incidence, death and GE population datasets
+
+
+head(incident_cases_final)
+head(mortality_cases_final )
+
+# Merge the incidence and death datasets based on tumor_category, age_category, and gender
+incidence_death <- merge(
+  x = incident_cases_final,
+  y = mortality_cases_final,
+  by = c("tumor_category", "age_category", "gender"),
+  all = TRUE)
+
+# View the merged dataset
+head(incidence_death)
+
+# Merge the incidence and death datasets incidence_death with  population_ge, this time using only gender and age category
+# Computation of specific rates 
+incidence_death_pop <- merge(
+  x = incidence_death,
+  y = population_ge,
+  by = c("age_category", "gender"),
+  all = TRUE) %>% 
+  arrange(gender,tumor_category,age_category) %>% # sort by gender,tumor_category,age_category, to be easily read
+  rename(population=pop) %>%  # it seems a package expects pop to be the name of the european reference population, here population is the population at risk
+  mutate(spe_incidence_rate=nb_tumors/population*10^5, # age-specific incidence rate
+         spe_mortality_rate=nb_death/population*10^5) # age-specific mortality rate
+
+# dsr approach of standardised rates computation needs seperate datasets for incidence/death counts and standard population
+
+# check if I still have the same counts 
+check<-incidence_death_pop %>% 
+  group_by(gender,tumor_category, .drop=FALSE) %>% 
+  summarize(total_incid=sum(nb_tumors),
+            total_death=sum(nb_death)) 
+write.xlsx(check, file = here("results/nb_tum_dc_after_merge_by_gender.xlsx"), rowNames = TRUE)
+
+
+# Add a little aesthetic by giving clear names to tumor types in English
+incidence_death_pop <- incidence_death_pop %>% 
+  mutate(tumor_category_txt = case_when(
+    tumor_category== "C00-C14" ~ "Lip, Oral Cavity, and Pharynx",
+    tumor_category== "C15" ~ "Esophagus",
+    tumor_category== "C16" ~ "Stomach",
+    tumor_category== "C17" ~ "Small Intestine",
+    tumor_category== "C18-C20" ~ "Colon and Rectum",
+    tumor_category== "C21" ~ "Anus and Anal Canal",
+    tumor_category== "C22" ~ "Liver",
+    tumor_category== "C23,C24" ~ "Gallbladder and Extrahepatic Biliary Tract",
+    tumor_category== "C25" ~ "Pancreas",
+    tumor_category== "C32" ~ "Larynx",
+    tumor_category== "C33-C34" ~ "Lung and Bronchus",
+    tumor_category== "C38,C45" ~ "Pleura and Mesothelioma",
+    tumor_category== "C40,C41" ~ "Bone",
+    tumor_category== "C43" ~ "Skin Melanoma",
+    tumor_category== "C47,C49" ~ "Soft Tissue",
+    tumor_category== "C50" ~ "Breast",
+    tumor_category== "C53" ~ "Cervix Uteri",
+    tumor_category== "C54,C55" ~ "Corpus Uteri",
+    tumor_category== "C56,C57" ~ "Ovary and Other Uterine Adnexa",
+    tumor_category== "C61" ~ "Prostate",
+    tumor_category== "C62" ~ "Testis",
+    tumor_category== "C64-C66,C68" ~ "Kidney and Renal Pelvis",
+    tumor_category== "C67" ~ "Urinary Bladder",
+    tumor_category== "C70-C72" ~ "Central Nervous System",
+    tumor_category== "C73" ~ "Thyroid",
+    tumor_category== "C81" ~ "Hodgkin Lymphoma",
+    tumor_category== "C82-85, C96" ~ "Non-Hodgkin Lymphoma",
+    tumor_category== "C90" ~ "Multiple Myeloma",
+    tumor_category== "C91" ~ "Chronic Lymphocytic Leukemia",
+    tumor_category== "C92" ~ "Acute Myeloid Leukemia",
+    tumor_category== "C93-95" ~ "Leukemia, Not otherwise specified",
+    tumor_category== "Autres*" ~ "Other",
+    tumor_category== "C26,C80" ~ "Unknown Primary Site",
+    tumor_category== "C00-C95" ~ "Total"))
+
+# Define the desired order of levels for the tumor_category_txt in English
+tumor_category_order <- c(
+  "Lip, Oral Cavity, and Pharynx",
+  "Esophagus",
+  "Stomach",
+  "Small Intestine",
+  "Colon and Rectum",
+  "Anus and Anal Canal",
+  "Liver",
+  "Gallbladder and Extrahepatic Biliary Tract",
+  "Pancreas",
+  "Larynx",
+  "Lung and Bronchus",
+  "Pleura and Mesothelioma",
+  "Bone",
+  "Skin Melanoma",
+  "Soft Tissue",
+  "Breast",
+  "Cervix Uteri",
+  "Corpus Uteri",
+  "Ovary and Other Uterine Adnexa",
+  "Prostate",
+  "Testis",
+  "Kidney and Renal Pelvis",
+  "Urinary Bladder",
+  "Central Nervous System",
+  "Thyroid",
+  "Hodgkin Lymphoma",
+  "Non-Hodgkin Lymphoma",
+  "Multiple Myeloma",
+  "Chronic Lymphocytic Leukemia",
+  "Acute Myeloid Leukemia",
+  "Leukemia, Not otherwise specified",
+  "Other",
+  "Unknown Primary Site",
+  "Total"
+)
+
+
+# Convert the tumor_category_txt variable to a factor variable with the desired order
+incidence_death_pop$tumor_category_txt <- factor(incidence_death_pop$tumor_category_txt, levels = tumor_category_order)
+
+
+
+```
+
+```{r rates_computation , include = FALSE, warning = FALSE,  message=FALSE }
+
+#------------------------ Raw and standardised incidence rates per tumor type and gender, for the 2016-2020 period using dsr
+
+# Of note - dsr() expects one data frame for the country populations "population" and event counts ("nb_tumors"/"nb_death"), and a separate data frame with the reference population. It also expects that in this reference population dataset the unit-time column name is “pop” 
+
+# Notably, event = is set to the column "nb_tumors"/"nb_death", and the fu = (“follow-up”) is set to the Population column "population". We set the subgroups of comparison as the column "tumor_category" and we standardize based on age_category and gender. These last two columns are not assigned a particular named argument.
+
+# Either I don'tunderstand how to compute rates by gender using dsr, either I just can't do it
+#So the solution is to produce 4 analyses: incidence and  mortality for each gender
+
+# Keep men, exclusion of female genitals
+incidence_death_pop_male<-incidence_death_pop %>% 
+  filter(gender==1) %>% 
+  filter(tumor_category!="C53" & tumor_category!="C54,C55" & tumor_category!="C56,C57")
+
+
+# Keep women, exclusion of male genitals
+incidence_death_pop_female<-incidence_death_pop %>% 
+  filter(gender==2) %>% 
+  filter(tumor_category!="C61" & tumor_category!="C62")
+
+
+# Raw and standardised incidence rates for male - 2013 REFERENCE POP
+incidence_rate_male <- dsr::dsr(
+  data = incidence_death_pop_male,
+  event = nb_tumors,
+  fu = population,
+  subgroup = tumor_category_txt,
+  by = c("age_category", "gender"),
+  refdata = ref_europe_1976,
+  method = "gamma",
+  sig = 0.95,
+  mp = 100000,
+  decimals = 2
+) %>% 
+  rename(`Cancer category`=Subgroup,
+    `Case number`= Numerator ,
+    `Crude Rate (per 100 000)`= `Crude Rate (per 1e+05)`,
+    `Std Rate (per 100 000)`= `Std Rate (per 1e+05)`,
+    `95% Lower CI`= `95% LCL (Std)`,
+    `95% Upper CI`= `95% UCL (Std)`) %>%
+    dplyr::select(-Denominator) 
+
+
+# Raw and standardised incidence rates for women  - 2013 REFERENCE POP 
+incidence_rate_female <- dsr::dsr(
+  data = incidence_death_pop_female,
+  event = nb_tumors,
+  fu = population,
+  subgroup = tumor_category_txt,
+  by = c("age_category", "gender"),
+  refdata = ref_europe_1976,
+  method = "gamma",
+  sig = 0.95,
+  mp = 100000,
+  decimals = 2
+)%>% 
+  rename(`Cancer category`=Subgroup,
+    `Case number`= Numerator ,
+    `Crude Rate (per 100 000)`= `Crude Rate (per 1e+05)`,
+    `Std Rate (per 100 000)`= `Std Rate (per 1e+05)`,
+    `95% Lower CI`= `95% LCL (Std)`,
+    `95% Upper CI`= `95% UCL (Std)`) %>%
+    dplyr::select(-Denominator) 
+
+
+# Raw and standardised mortality rates for male - 2013 REFERENCE POP
+
+mortality_rate_male <- dsr::dsr(
+  data = incidence_death_pop_male,
+  event = nb_death,
+  fu = population,
+  subgroup = tumor_category_txt,
+  by = c("age_category", "gender"),
+  refdata = ref_europe_1976,
+  method = "gamma",
+  sig = 0.95,
+  mp = 100000,
+  decimals = 2
+)%>% 
+  rename(`Cancer category`=Subgroup,
+    `Case number`= Numerator ,
+    `Crude Rate (per 100 000)`= `Crude Rate (per 1e+05)`,
+    `Std Rate (per 100 000)`= `Std Rate (per 1e+05)`,
+    `95% Lower CI`= `95% LCL (Std)`,
+    `95% Upper CI`= `95% UCL (Std)`) %>%
+    dplyr::select(-Denominator) 
+
+
+# Raw and standardised mortality rates for women - 2013 REFERENCE POP
+
+mortality_rate_female <- dsr::dsr(
+  data = incidence_death_pop_female,
+  event = nb_death,
+  fu = population,
+  subgroup = tumor_category_txt,
+  by = c("age_category", "gender"),
+  refdata = ref_europe_1976,
+  method = "gamma",
+  sig = 0.95,
+  mp = 100000,
+  decimals = 2
+)%>% 
+  rename(`Cancer category`=Subgroup,
+    `Case number`= Numerator ,
+    `Crude Rate (per 100 000)`= `Crude Rate (per 1e+05)`,
+    `Std Rate (per 100 000)`= `Std Rate (per 1e+05)`,
+    `95% Lower CI`= `95% LCL (Std)`,
+    `95% Upper CI`= `95% UCL (Std)`) %>%
+    dplyr::select(-Denominator) 
+
+
+
+```
+
+```{r inline_code_preparation , include = FALSE, warning = FALSE,  message=FALSE }
+# Preparation of data for inline code
+# In a first chapter we want to add total number of invasive cancers, total death by cancer, mean age at diagnosis , by gender
+
+
+# Calculate the total number of cancer cases for men (gender == 1)
+total_incident_cases_for_men <- sum(incident_cases$nb_tumors[incident_cases$gender == 1])
+# Calculate the total number of cancer cases for women (gender == 2)
+total_incident_cases_for_women <- sum(incident_cases$nb_tumors[incident_cases$gender == 2])
+
+
+# Calculate the total number of death by cancer  for men (gender == 1)
+total_mortality_cases_for_men <- sum(mortality_cases$nb_death[incident_cases$gender == 1])
+# Calculate the total number of death by cancer  for women (gender == 2)
+total_mortality_cases_for_women <- sum(mortality_cases$nb_death[incident_cases$gender == 2])
+
+
+# Mean age at diagnosis or at death
+# Calculate the mean age at diagnosis for men
+mean_age_incidence_male <- base_registre1 %>%
+  filter(gender == 1) %>%
+  summarise(mean_age = mean(age, na.rm = TRUE)) %>%
+  pull(mean_age) # retrieves the calculated mean age at diagnosis for men from the summarized data frame
+
+mean_age_incidence_female <- base_registre1 %>%
+  filter(gender == 2) %>%
+  summarise(mean_age = mean(age, na.rm = TRUE)) %>%
+  pull(mean_age) # retrieves the calculated mean age at diagnosis for men from the summarized data frame
+
+
+mean_age_mortality_male <- mortality1 %>%
+  filter(gender == 1) %>%
+  summarise(mean_age = mean(age, na.rm = TRUE)) %>%
+  pull(mean_age) # retrieves the calculated mean age at diagnosis for men from the summarized data frame
+
+mean_age_mortality_female <- mortality1 %>%
+  filter(gender == 2) %>%
+  summarise(mean_age = mean(age, na.rm = TRUE)) %>%
+  pull(mean_age) # retrieves the calculated mean age at diagnosis for men from the summarized data frame
+
+# in the future we will compute mean age + CI  by gender and cancer category, via loops (not yet performed)
+
+
+# Keep only variables that will be used and give the appropriate ouput format for tables
+
+table_incidence_rate_male<-incidence_rate_male %>% 
+    mutate(
+    `Crude Rate (per 100 000)` = round(`Crude Rate (per 100 000)`, 1),
+    `Std Rate (per 100 000)` = round(`Std Rate (per 100 000)`, 1),
+    `95% Lower CI` = round(`95% Lower CI`, 1),
+    `95% Upper CI` = round(`95% Upper CI`, 1) ,
+    `Mean cases/year`=round(`Case number`/5,0))%>% 
+    dplyr::select(`Cancer category`, `Case number`,`Mean cases/year`,  `Crude Rate (per 100 000)`, `Std Rate (per 100 000)`,`95% Lower CI`,`95% Upper CI`) 
+
+
+
+
+table_incidence_rate_female<-incidence_rate_female %>% 
+    mutate(
+    `Crude Rate (per 100 000)` = round(`Crude Rate (per 100 000)`, 1),
+    `Std Rate (per 100 000)` = round(`Std Rate (per 100 000)`, 1),
+    `95% Lower CI` = round(`95% Lower CI`, 1),
+    `95% Upper CI` = round(`95% Upper CI`, 1) ,
+    `Mean cases/year`=round(`Case number`/5,0))%>% 
+    dplyr::select(`Cancer category`, `Case number`,`Mean cases/year`,  `Crude Rate (per 100 000)`, `Std Rate (per 100 000)`,`95% Lower CI`,`95% Upper CI`) 
+
+
+table_mortality_rate_male<-mortality_rate_male %>% 
+    mutate(
+    `Crude Rate (per 100 000)` = round(`Crude Rate (per 100 000)`, 1),
+    `Std Rate (per 100 000)` = round(`Std Rate (per 100 000)`, 1),
+    `95% Lower CI` = round(`95% Lower CI`, 1),
+    `95% Upper CI` = round(`95% Upper CI`, 1) ,
+    `Mean cases/year`=round(`Case number`/5,0))%>% 
+    dplyr::select(`Cancer category`, `Case number`,`Mean cases/year`,  `Crude Rate (per 100 000)`, `Std Rate (per 100 000)`,`95% Lower CI`,`95% Upper CI`) 
+
+
+table_mortality_rate_female<-mortality_rate_female %>% 
+    mutate(
+    `Crude Rate (per 100 000)` = round(`Crude Rate (per 100 000)`, 1),
+    `Std Rate (per 100 000)` = round(`Std Rate (per 100 000)`, 1),
+    `95% Lower CI` = round(`95% Lower CI`, 1),
+    `95% Upper CI` = round(`95% Upper CI`, 1) ,
+    `Mean cases/year`=round(`Case number`/5,0))%>% 
+    dplyr::select(`Cancer category`, `Case number`,`Mean cases/year`,  `Crude Rate (per 100 000)`, `Std Rate (per 100 000)`,`95% Lower CI`,`95% Upper CI`) 
+
+
+#Transforms cancer category variable to a factor variable with the desired order, defined previously
+# Didn't manage to put it in the previous command lines
+table_incidence_rate_male$`Cancer category` <- factor(table_incidence_rate_male$`Cancer category`, levels = tumor_category_order)
+table_incidence_rate_female$`Cancer category` <- factor(table_incidence_rate_female$`Cancer category`, levels = tumor_category_order)
+table_mortality_rate_male$`Cancer category` <- factor(table_mortality_rate_male$`Cancer category`, levels = tumor_category_order)
+table_mortality_rate_female$`Cancer category` <- factor(table_mortality_rate_female$`Cancer category`, levels = tumor_category_order)
+
+table_incidence_rate_male_final <- table_incidence_rate_male %>% 
+  arrange(`Cancer category`)
+
+table_incidence_rate_female_final <- table_incidence_rate_female %>% 
+  arrange(`Cancer category`)
+
+table_mortality_rate_male_final <- table_mortality_rate_male %>% 
+  arrange(`Cancer category`)
+
+table_mortality_rate_female_final <- table_mortality_rate_female %>% 
+  arrange(`Cancer category`)
+
+# If we want these table to be downoadable, we first need to export them to some excel file
+
+# Export the dataframe to a Excel file
+write.xlsx(table_incidence_rate_male_final, file = here("results/table_incidence_rate_male_final.xlsx"), rowNames = TRUE)
+write.xlsx(table_incidence_rate_female_final, file = here("results/table_incidence_rate_female_final.xlsx"), rowNames = TRUE)
+write.xlsx(table_mortality_rate_male_final, file = here("results/table_mortality_rate_male_final.xlsx"), rowNames = TRUE)
+write.xlsx(table_mortality_rate_female_final, file = here("results/table_mortality_rate_female_final.xlsx"), rowNames = TRUE)
+
+# Export the dataframe to a CSV file
+write.csv(table_incidence_rate_male_final, file = here("results/table_incidence_rate_male_final.csv"), row.names = TRUE)
+write.csv(table_incidence_rate_female_final, file = here("results/table_incidence_rate_female_final.csv"), row.names = TRUE)
+write.csv(table_mortality_rate_male_final, file = here("results/table_mortality_rate_male_final.csv"), row.names = TRUE)
+write.csv(table_mortality_rate_female_final, file = here("results/table_mortality_rate_female_final.csv"), row.names = TRUE)
+
+
+
+
+```
+
+```{r final_datamanagement_for_graph_building , include = FALSE, warning = FALSE,  message=FALSE }
+# Identificaton of 10th most common cancer localisation
+# Sorting the data frame in descending order based on 'Std Rate (per 1e+05)'
+incidence_rate_male_for_graph <- incidence_rate_male %>%
+   filter(`Cancer category`!="Other" & `Cancer category`!="Total" & `Cancer category`!="Unknown Primary Site" ) %>%  # don't want to graph "Other"  or "Total" category
+   arrange(desc(`Std Rate (per 100 000)`)) 
+incidence_rate_male_for_graph <- head(incidence_rate_male_for_graph, 10) # Extract the first ten rows
+
+
+# Sorting the data frame in descending order based on 'Std Rate (per 1e+05)'
+incidence_rate_female_for_graph <- incidence_rate_female %>%
+   filter(`Cancer category`!="Other" & `Cancer category`!="Total" & `Cancer category`!="Unknown Primary Site" ) %>%  # don't want to graph "Other"  or "Total" category
+   arrange(desc(`Std Rate (per 100 000)`)) 
+incidence_rate_female_for_graph <- head(incidence_rate_female_for_graph, 10)# Extract the first ten rows
+
+
+# Sorting the data frame in descending order based on 'Std Rate (per 1e+05)'
+mortality_rate_male_for_graph <- mortality_rate_male %>%
+   filter(`Cancer category`!="Other" & `Cancer category`!="Total" & `Cancer category`!="Unknown Primary Site" ) %>%  # don't want to graph "Other"  or "Total" category
+   arrange(desc(`Std Rate (per 100 000)`)) 
+mortality_rate_male_for_graph <- head(mortality_rate_male_for_graph, 10) # Extract the first ten rows
+
+
+# Sorting the data frame in descending order based on 'Std Rate (per 1e+05)'
+mortality_rate_female_for_graph <- mortality_rate_female %>%
+   filter(`Cancer category`!="Other" & `Cancer category`!="Total" & `Cancer category`!="Unknown Primary Site" ) %>%  # don't want to graph "Other"  or "Total" category
+   arrange(desc(`Std Rate (per 100 000)`)) 
+mortality_rate_female_for_graph <- head(mortality_rate_female_for_graph, 10)# Extract the first ten rows
+
+
+# Plot containing rates for both men and women : need to append again 2 DF
+# And put gender as a factor variable, type was lost somewhere before
+
+incidence_rate_male<-incidence_rate_male %>% 
+  mutate(gender=1,
+         gender=as.factor(gender))
+incidence_rate_female<-incidence_rate_female %>% 
+  mutate(gender=2,
+         gender=as.factor(gender))
+mortality_rate_male<-mortality_rate_male %>% 
+  mutate(gender=1,
+         gender=as.factor(gender))
+mortality_rate_female<-mortality_rate_female %>% 
+  mutate(gender=2,
+         gender=as.factor(gender))
+
+# Storing the combined DF in a new dataframe
+incidence_rate <- rbind(incidence_rate_male, incidence_rate_female)
+mortality_rate <-rbind(mortality_rate_male, mortality_rate_female)
+
+
+# Still some computation to add for inline code
+# Part of the 5 major cancer types among incidence and death cases
+
+# Create a vector of excluded categories (we don't want to see those category in the major cancer sites )
+excluded_categories <- c("Other", "Unknown Primary Site", "Total")
+
+# ------------------ Among incidence cases for men
+# Filter out rows with excluded categories and calculate the sum of Case number for the remaining top 5
+top_5_incidence_cancers_sum_male <- sum(head(incidence_rate_male_for_graph[!incidence_rate_male_for_graph$`Cancer category` %in% excluded_categories, ]$`Case number`, 5))
+# Calculate the total number of cancer cases
+total_incidence_cancer_cases_male <- sum(incident_cases[incident_cases$gender != 2, ]$nb_tumors)
+# Calculate the percentage
+percentage_top_5_incidence_male <- (top_5_incidence_cancers_sum_male / total_incidence_cancer_cases_male) * 100
+
+
+# ------------------ Among incidence cases for women
+# Create a vector of excluded categories (we don't want to see those category in the major cancer sites )
+# Filter out rows with excluded categories and calculate the sum of Case number for the remaining top 5
+top_5_incidence_cancers_sum_female <- sum(head(incidence_rate_female_for_graph[!incidence_rate_female_for_graph$`Cancer category` %in% excluded_categories, ]$`Case number`, 5))
+# Calculate the total number of cancer cases
+total_incidence_cancer_cases_female <- sum(incident_cases[incident_cases$gender != 1, ]$nb_tumors)
+# Calculate the percentage
+percentage_top_5_incidence_female <- (top_5_incidence_cancers_sum_female / total_incidence_cancer_cases_female) * 100
+
+
+
+
+
+# ------------------ Among death cases for men
+# Filter out rows with excluded categories and calculate the sum of Case number for the remaining top 5
+top_5_mortality_cancers_sum_male <- sum(head(mortality_rate_male_for_graph[!mortality_rate_male_for_graph$`Cancer category` %in% excluded_categories, ]$`Case number`, 5))
+# Calculate the total number of cancer cases
+total_mortality_cancer_cases_male <- sum(mortality_cases[mortality_cases$gender != 2, ]$nb_death)
+# Calculate the percentage
+percentage_top_5_mortality_male <- (top_5_mortality_cancers_sum_male / total_mortality_cancer_cases_male) * 100
+
+
+# ------------------ Among death cases for women
+# Create a vector of excluded categories (we don't want to see those category in the major cancer sites )
+# Filter out rows with excluded categories and calculate the sum of Case number for the remaining top 5
+top_5_mortality_cancers_sum_female <- sum(head(mortality_rate_female_for_graph[!mortality_rate_female_for_graph$`Cancer category` %in% excluded_categories, ]$`Case number`, 5))
+# Calculate the total number of cancer cases
+total_mortality_cancer_cases_female <- sum(mortality_cases[mortality_cases$gender != 1, ]$nb_death)
+# Calculate the percentage
+percentage_top_5_mortality_female <- (top_5_mortality_cancers_sum_female / total_mortality_cancer_cases_female) * 100
+
+
+
+
+
+
+```
+
+```{r fig.show="hold", fig.width=7, fig.height=4, echo=FALSE, include = FALSE, warning = FALSE,  message=FALSE}
+
+#----------------Number of men vs number of women
+
+
+# Calculate the total number of men (gender=1) and women (gender=2)
+total_men_incidence <- sum(incidence_death$nb_tumors[incidence_death$gender == 1])
+total_women_incidence <- sum(incidence_death$nb_tumors[incidence_death$gender == 2])
+
+# Create a data frame for the pie chart
+pie_data_incidence <- data.frame(
+  Gender = c("Men", "Women"),
+  Count = c(total_men_incidence, total_women_incidence)
+)
+
+# Calculate the percentages for the pie chart
+pie_data_incidence$Percentage <- round(pie_data_incidence$Count / sum(pie_data_incidence$Count) * 100,1)
+
+# Define custom colors for each gender
+custom_colors <- c("#3f4166",  "#a5d411")
+
+# Create the pie chart with increased font size for percentages
+gr_1_pie_chart_incidence <- ggplot(pie_data_incidence, aes(x = "", y = Percentage, fill = Gender)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(Percentage, "%"), color = Gender), position = position_stack(vjust = 0.5), size = 5) +  # Increase font size here (e.g., size = 6)
+  theme_void() +
+  scale_fill_manual(values = custom_colors) +  # Set custom colors for each gender
+  scale_color_manual(values = c("white", "black")) +  # Set text color for each gender
+  labs(title = "Incidence", fill = "Gender") +
+   theme(legend.position = "none")  # Remove legend
+# Display the pie chart
+print(gr_1_pie_chart_incidence)
+
+
+#-------------------------Mortality
+
+# Calculate the total number of men (gender=1) and women (gender=2)
+total_men_mortality <- sum(incidence_death$nb_death[incidence_death$gender == 1])
+total_women_mortality <- sum(incidence_death$nb_death[incidence_death$gender == 2])
+
+# Create a data frame for the pie chart
+pie_data_mortality <- data.frame(
+  Gender = c("Men", "Women"),
+  Count = c(total_men_mortality, total_women_mortality)
+)
+
+# Calculate the percentages for the pie chart
+pie_data_mortality$Percentage <- round(pie_data_mortality$Count / sum(pie_data_mortality$Count) * 100,1)
+
+# Define custom colors for each gender
+custom_colors <- c("#3f4166",  "#a5d411")
+
+# Create the pie chart with increased font size for percentages
+gr_2_pie_chart_mortality <- ggplot(pie_data_mortality, aes(x = "", y = Percentage, fill = Gender)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar("y", start = 0) +
+  geom_text(aes(label = paste0(Percentage, "%"), color = Gender), position = position_stack(vjust = 0.5), size = 5) +  # Increase font size here (e.g., size = 6)
+  theme_void() +
+  scale_fill_manual(values = custom_colors) +  # Set custom colors for each gender
+  scale_color_manual(values = c("white", "black")) +  # Set text color for each gender
+  labs(title = "Mortality", fill = "Gender") +
+  guides(fill = guide_legend(override.aes = list(color = NA))) + # Remove legend labels
+  theme(legend.text = element_text(size = 10))  # Increase legend font size here (e.g., size = 12)
+# Display the pie chart
+print(gr_2_pie_chart_mortality)
+
+
+  gr_3_pie_chart_final <- patchwork::wrap_plots(gr_1_pie_chart_incidence,gr_2_pie_chart_mortality)+
+  plot_annotation(
+          title = 'Gender distribution')
+print(gr_3_pie_chart_final)
+  
+
+
+
+```
+
+```{r fig.show="hold", fig.width=7, fig.height=4, echo=FALSE, include = FALSE, warning = FALSE,  message=FALSE}
+
+# Incidence rates bar charts for the 10th most frequent cancers
+
+gr_4_incidence_male <- ggplot(data = incidence_rate_male_for_graph,
+                              aes(x = reorder(`Cancer category`, `Std Rate (per 100 000)`),
+                                  y = `Std Rate (per 100 000)`)) +
+  geom_bar(stat = "identity",               # `Std Rate (per 1e+05)`  already contains the statistics to be shown
+           fill = "#3f4166", color = "#3f4166") +
+  coord_flip() +                            # This line flips the x and y axes, making the bars horizontal
+  labs(x = "", y = "Incidence rate", title = "Men") +
+  scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, by = 50)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +  # Remove grid lines
+  geom_text(aes(label = round(`Std Rate (per 100 000)`, 0)), hjust = -0.1)+  # Add labels on top of bars
+  theme(axis.text.y = element_text(size = 8))  # Adjust the y-axis font size
+  print(gr_4_incidence_male)
+
+
+gr_5_incidence_female <- ggplot(data = incidence_rate_female_for_graph,
+                              aes(x = reorder(`Cancer category`, `Std Rate (per 100 000)`),
+                                  y = `Std Rate (per 100 000)`)) +
+  geom_bar(stat = "identity",               # `Std Rate (per 1e+05)`  already contains the statistics to be shown
+           fill = "#a5d411", color = "#a5d411") +
+  coord_flip() +                            # This line flips the x and y axes, making the bars horizontal
+  labs(x = "", y = "Incidence rate", title = "Women") +
+  scale_y_continuous(limits = c(0, 150), breaks = seq(0, 150, by = 50)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +  # Remove grid lines
+  geom_text(aes(label = round(`Std Rate (per 100 000)`, 0)), hjust = -0.1)+  # Add labels on top of bars
+  theme(axis.text.y = element_text(size = 8))  # Adjust the y-axis font size
+  print(gr_5_incidence_female)
+
+# Arrange plots side by side with a common title above and caption below
+  gr_6_incidence_final <- patchwork::wrap_plots(gr_4_incidence_male,gr_5_incidence_female)+
+  plot_annotation(
+          title = 'Standardised incidence rates, for 100,000 per year',
+          caption = "Geneva, 2016-2020")
+print(gr_6_incidence_final)
+  
+
+
+
+```
+
+```{r fig.show="hold", fig.width=7, fig.height=4, echo=FALSE, include = FALSE, warning = FALSE,  message=FALSE}
+gr_7_mortality_male <- ggplot(data = mortality_rate_male_for_graph,
+                              aes(x = reorder(`Cancer category`, `Std Rate (per 100 000)`),
+                                  y = `Std Rate (per 100 000)`)) +
+  geom_bar(stat = "identity",               # `Std Rate (per 1e+05)`  already contains the statistics to be shown
+           fill = "#3f4166", color = "#3f4166") +
+  coord_flip() +                            # This line flips the x and y axes, making the bars horizontal
+  labs(x = "", y = "Mortality rate", title = "Men") +
+  scale_y_continuous(limits = c(0, 40), breaks = seq(0, 40, by = 10)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +  # Remove grid lines
+  geom_text(aes(label = round(`Std Rate (per 100 000)`, 0)), hjust = -0.1)+  # Add labels on top of bars
+  theme(axis.text.y = element_text(size = 8))  # Adjust the y-axis font size
+  print(gr_7_mortality_male)
+
+
+gr_8_mortality_female <- ggplot(data = mortality_rate_female_for_graph,
+                              aes(x = reorder(`Cancer category`, `Std Rate (per 100 000)`),
+                                  y = `Std Rate (per 100 000)`)) +
+  geom_bar(stat = "identity",               # `Std Rate (per 1e+05)`  already contains the statistics to be shown
+           fill = "#a5d411", color = "#a5d411") +
+  coord_flip() +                            # This line flips the x and y axes, making the bars horizontal
+  labs(x = "", y = "Mortality rate", title = "Women") +
+  scale_y_continuous(limits = c(0, 40), breaks = seq(0, 40, by = 10)) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +  # Remove grid lines
+  geom_text(aes(label = round(`Std Rate (per 100 000)`, 0)), hjust = -0.1)+  # Add labels on top of bars
+  theme(axis.text.y = element_text(size = 8))  # Adjust the y-axis font size
+  print(gr_8_mortality_female)
+  
+  
+  #Male and female graph combination with custom spacing between the plots
+  
+gr_9_mortality_final <- patchwork::wrap_plots(gr_7_mortality_male,gr_8_mortality_female)+
+  plot_annotation(title = 'Standardised mortality rate, for 100,000 per year',
+                 caption = "Geneva, 2016-2020")
+print(gr_9_mortality_final)
+  
+```
+
+```{r fig.show="hold", fig.width=7, fig.height=4, echo=FALSE, include = FALSE, warning = FALSE,  message=FALSE}
+
+# ------------------------- AGE AT DIAGNOSIS
+# Graph age at diagnosis with boxplots and bar graphs
+# Side by side
+# Define the colors for gender 1 and gender 2
+color_scheme <- c("1" = "#3f4166", "2" = "#a5d411")
+
+gr_10_age_incidence <- ggplot(data = base_registre1,
+                             aes(x = factor(gender),
+                                 y = age,
+                                 fill = factor(gender),
+                                 color = factor(gender))) +
+  geom_boxplot(alpha = 0.6) +
+  scale_fill_manual(values = color_scheme, labels = c("Men", "Women")) +
+  scale_color_manual(values = color_scheme, labels = c("Men", "Women")) +
+  scale_x_discrete(labels = c("Men", "Women")) +  # Set custom labels for x-axis
+  labs(title = "Incidence age",  # Set the main title (if desired)
+       x = "Gender",                       # Set the x-axis label
+       y = "Age",                          # Set the y-axis label
+       fill = "Gender",                    # Set the legend label for fill
+       color = "Gender") +                  # Set the legend label for color
+  theme(panel.grid = element_blank(),  # Remove the grid
+        legend.position = "none") +  # Remove the legend because will be shown in 2nd plot
+  scale_y_continuous(breaks = seq(0, 100, by = 10))
+
+# Print the plot to preview the result
+print(gr_10_age_incidence)
+
+
+
+
+# Graph of incidence rates and number of cases
+# Difficult to graph 2 plots on the same graph with R
+# sec.axis() does not allow to build an entirely new Y axis. It just builds a second Y axis based on the first one, applying a mathematical transformation. 
+#https://r-graph-gallery.com/line-chart-dual-Y-axis-ggplot2.html
+# See this one to automatically change min max and scale shift in future plots : https://finchstudio.io/blog/ggplot-dual-y-axes/
+# We want this graph only for the "total cancer" type
+# Remove "years" and " and older" from the x axis for lighter legend
+# but doing that we need to convert age_category to a factor with specified levels to maintain the desired order
+
+
+gr_11_data<-incidence_death_pop %>% 
+  filter(tumor_category=="C00-C95") %>% 
+  mutate(age_category = gsub(" years", "", age_category),
+         age_category = gsub("85 and older", "85+", age_category))
+
+# it seems it can't be done in the mutate function
+# Convert age_category to a factor with specified levels to maintain the order
+gr_11_data$age_category <- factor(gr_11_data$age_category, levels = c("0 to 4", "5 to 9", "10 to 14", "15 to 19", "20 to 24", "25 to 29", "30 to 34", "35 to 39", "40 to 44", "45 to 49", "50 to 54", "55 to 59", "60 to 64", "65 to 69", "70 to 74", "75 to 79", "80 to 84", "85+"))
+
+
+# Value used to transform the incidence data
+coeffi <- 2
+
+# Assign the colors wanted for the bars and the lines
+bar_colors <- c("#3f4166", "#a5d411")
+line_colors <- c("#3f4166", "#a5d411")
+
+# Create the plot
+gr_11_incidence_rate_nb_cases <- ggplot(gr_11_data, aes(x = age_category)) +
+  # Primary y-axis: bar chart for nb_tumors
+  geom_bar(aes(y = nb_tumors, fill = factor(gender)), stat = "identity", position = "dodge", width = 0.5, alpha=0.5) +
+  scale_fill_manual(values = bar_colors, name = "Gender", labels = c("Men", "Women")) +
+  
+  # Secondary y-axis: lines for spe_incidence_rate
+  # transformation in the aes of the geom_line itself by dividing spe_incidence_rate by 3 to adjust it to the same range as the primary y-axis representing the number of tumors.
+  geom_line(aes(y = spe_incidence_rate / coeffi, group = gender, color = factor(gender), linetype = factor(gender)), linewidth = 1.2) +
+  scale_color_manual(values = line_colors, name = "Gender", labels = c("Men", "Women")) +
+  scale_linetype_manual(values = c("solid", "solid"), name = "Gender", labels = c("Men", "Women")) +
+  
+  # Set the labels and title
+  xlab("Age category") +
+  ylab("Number of cases") +
+  theme(panel.grid = element_blank())+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  
+  # Customize the second y-axis to represent the incidence rate
+  #The sec_axis function is used to create the second y-axis, and the transformation ~ . * 3 is applied to rescale the values correctly for the incidence rate. The number 3 is used as an arbitrary factor to make the lines match the y-axis scale.
+  scale_y_continuous(
+    sec.axis = sec_axis(~ . * coeffi, name = "Incidence rate per 100 0000")
+  )+
+  # Customize the legend titles
+  labs(fill = "Tumor Count", color = "Incidence Rate")
+
+# Show the plot
+print(gr_11_incidence_rate_nb_cases)
+
+
+# Merging of the two plots
+# Could be improved for captions and legends, didn't manage to say bars were nb tumors and lines were incidence rates
+gr_12_age_incidence <- patchwork::wrap_plots(gr_10_age_incidence+gr_11_incidence_rate_nb_cases)
+
+print(gr_12_age_incidence)
+
+
+# ------------------------- AGE AT DEATH
+# Graph age at diagnosis with boxplots and bar graphs
+
+gr_13_age_mortality <- ggplot(data = mortality1,
+                             aes(x = factor(gender),
+                                 y = age,
+                                 fill = factor(gender),
+                                 color = factor(gender))) +
+  geom_boxplot(alpha = 0.6) +
+  scale_fill_manual(values = color_scheme, labels = c("Men", "Women")) +
+  scale_color_manual(values = color_scheme, labels = c("Men", "Women")) +
+  scale_x_discrete(labels = c("Men", "Women")) +
+  labs(title = "Age at death",
+       x = "Gender",
+       y = "Age",
+       fill = "Gender",
+       color = "Gender") +
+  theme(panel.grid = element_blank(),
+        legend.position = "none") +  
+  scale_y_continuous(breaks = seq(0, 110, by = 10))
+
+# Print the plot to preview the result
+print(gr_13_age_mortality)
+
+
+
+
+# Graph of mortality rates and number of death
+# The dataset we need is the same as the one used for incidence graph
+
+# Value used to transform the mortality data
+coeffd <- 3
+
+# Create the plot
+gr_14_mortality_rate_nb_cases <- ggplot(gr_11_data, aes(x = age_category)) +
+  # Primary y-axis: bar chart for nb_tumors
+  geom_bar(aes(y = nb_death, fill = factor(gender)), stat = "identity", position = "dodge", width = 0.5, alpha=0.5) +
+  scale_fill_manual(values = bar_colors, name = "Gender", labels = c("Men", "Women")) +
+  
+  # Secondary y-axis: lines for spe_incidence_rate
+   geom_line(aes(y = spe_mortality_rate / coeffd, group = gender, color = factor(gender), linetype = factor(gender)), linewidth = 1.2) +
+  scale_color_manual(values = line_colors, name = "Gender", labels = c("Men", "Women")) +
+  scale_linetype_manual(values = c("solid", "solid"), name = "Gender", labels = c("Men", "Women")) +
+  
+  # Set the labels and title
+  xlab("Age category") +
+  ylab("Number of death") +
+  theme(panel.grid = element_blank())+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  
+  # Customize the second y-axis to represent the incidence rate
+  #The sec_axis function is used to create the second y-axis, and the transformation ~ . * 3 is applied to rescale the values correctly for the incidence rate. The number 3 is used as an arbitrary factor to make the lines match the y-axis scale.
+  scale_y_continuous(
+    sec.axis = sec_axis(~ . * coeffd, name = "Incidence rate per 100 0000")
+  )+
+  # Customize the legend titles - doesnt work
+  labs(fill = "Tumor Count", color = "Incidence Rate")
+
+# Show the plot
+print(gr_14_mortality_rate_nb_cases)
+
+
+
+
+# Merging of the two plots
+# Could be improved for captions and legends, didn't manage to say bars were nb tumors and lines were incidence rates
+gr_15_age_mortality <- patchwork::wrap_plots(gr_13_age_mortality+gr_14_mortality_rate_nb_cases)
+
+print(gr_15_age_mortality)
+
+
+  
+```
+
+# Introduction
+
+## Cancer registration in Switzerland
+
+Since January 1, 2020, data collection and registration has been governed by the Law on the Registration of Oncological Diseases [LEMO](https://www.bag.admin.ch/bag/fr/home/gesetze-und-bewilligungen/gesetzgebung/gesetzgebung-mensch-gesundheit/gesetzgebung-krebsregistrierung.html). This law stipulates that oncological diseases must be registered uniformly and comprehensively in Switzerland. It also requires doctors, laboratories, hospitals and other private or public institutions in the healthcare system to communicate certain data concerning oncological diseases. The aim of this obligation is the complete registration of oncological diseases in Switzerland.
+
+## Geneva's cancer registry
+
+The Geneva Tumor Registry was created in 1970. It is the oldest register in Switzerland and one of the oldest in Europe ([FSO](https://www.bfs.admin.ch/bfs/fr/home/statistiques/catalogues-banques-donnees/cartes.assetdetail.23827601.html)).
+
+![](images/Carte_registres.png){width="729"}
+
+The aim of a population-based register such as the one in Geneva is to record all cancers diagnosed in the canton's resident population. The objective is to produce comparable data over time on the cancer situation in Geneva, through the production of appropriate indicators (incidence, prevalence, mortality, survival, projections). In order to be exhaustive, it receives or actively seeks information from numerous sources, including hospitals, anatomopathology laboratories and referring physicians.
+
+To learn more, visit the [Registry website](https://unige.ch/medecine/rgt/accueil/)
+
+# Inclusions criteria
+
+Included are all patients living in Geneva's Canton and diagnosed with a malignant primary cancer, with the exception of non-melanomic skin cancers (C00-43, C45-97, ICD-10). Primary cancers are selected following the rules of the [IARC/IACR rules](http://www.iacr.com.fr/TR42.htm) .
+
+The cause of death is based on death certificates indicating the causes of death which are completed by the physicians who declare the death. Are included all deaths caused by malignant cancer, that is to say underlying cause of death as coded by the Statistical Federal Office (SFO) (C00-C97, ICD-10). The mortality data presented were supplied by the [FSO](https://www.bfs.admin.ch/bfs/fr/home.html) and were processed by the Registry.
+
+# Indicators definitions
+
+This report is a compilation of the latest available cancer statistics in Geneva for the period 2016-2020, regarding incidence and mortality.
+
+Both incidence and mortality are analysed using age-standardized rates (see definition below) computed with direct method. The use of a standard population is a very useful tool for comparisons of incidence and mortality rates. Age standardization is one of the key methods to control for different age distributions among populations, or over time. The European standard population in use for the interpretation of cancer burden is the Waterhouse reference population ( *Waterhouse J. and Col. (Eds.). Cancer incidence in five continents. Lyon, IARC, 1976*).
+
+Table 1 shows the european reference population used in this document.
+
+```{r, echo=FALSE}
+# For the table that has to be shown, since the weights are the same for male and female we keep only one gender and then delete the gender column
+ref_europe<-ref_europe_1976 %>% 
+  filter(gender==1) %>% 
+  rename(`Age category`= age_category,
+         `Reference population 1976`=pop) %>% 
+dplyr::select(-gender) 
+
+# Format the 'Reference population 1976' column with commas
+ref_europe$`Reference population 1976` <- format(ref_europe$`Reference population 1976`, big.mark = ",")
+
+# We have lost the age category level order...
+ref_europe$`Age category`<-factor(ref_europe$`Age category`, levels=c("0 to 4 years", "5 to 9 years", "10 to 14 years", "15 to 19 years", "20 to 24 years", "25 to 29 years", "30 to 34 years", "35 to 39 years", "40 to 44 years", "45 to 49 years", "50 to 54 years", "55 to 59 years", "60 to 64 years", "65 to 69 years", "70 to 74 years", "75 to 79 years", "80 to 84 years", "85 and older"))
+
+ref_europe<-ref_europe %>% 
+  arrange(`Age category`)
+
+ref<-kable(ref_europe, caption = "<b>Table 1: 1976's European Reference Population")%>%
+  column_spec(1, bold = T) %>%
+  row_spec(0, bold = T, color = "white", background = "black")
+
+# Print the table
+ref
+```
+
+*Crude incidence/mortality rate* : The crude rate is the ratio of the number of new cases or deaths in a specified population and time period to the size of the population at risk during the same time period. Incidence and mortality rate are usually presented as an annual rate per 100,000 persons at risk.
+
+*Age-specific incidence/mortality rate*: It is calculated by dividing the number of new cancers or cancer deaths observed in a given age category (generally five-year age groups, with highest group 85+) during a given time period by the corresponding number of person in the population at risk in the same age category and time period. It is expressed as the number of new cancer cases or deaths per 100,000 person at risk per year.
+
+*Age-standardized incidence/mortality rate* (ASR). ASR is a summary measure of the rate that a given population would have if it had a standard age structure. Standardization is necessary when comparing several populations that differ with respect to age because age has a powerful influence on the risk of cancer. The ASR is a weighted mean of the age-specific rates; the weights are given by population distribution of a reference population. One frequently used reference population is the European Reference (or Standard) Population. The calculated incidence or mortality rate is then called *age-standardized* incidence or mortality *rate* (*European reference*). It is expressed per 100,000 person per year. 
+
+*Population at risk*: The population which is susceptible to develop a specific cancer. It is defined on the basis of demographic data, such as place of residence, sex, age group, etc.
+
+More information on [ECIS](https://ecis.jrc.ec.europa.eu/info/glossary.html) (for reference population) and [Nicer](https://www.nicer.org/NicerReportFiles/methods_file/methods.htm) (for cancer registration).
+
+# Cancer incidence and mortality in Geneva, an overview
+
+Over the period 2016-2020, a total of `r format(total_incident_cases_for_men, big.mark = ',')` and `r format(total_incident_cases_for_women, big.mark = ',')` new cases of invasive cancer were diagnosed respectively in men and in women in the canton of Geneva. Over the same period, `r format(total_mortality_cases_for_men, big.mark = ',')` men and `r format(total_mortality_cases_for_women, big.mark = ',')` women died from cancer. Figure 1 shows the proportion of men and women, for incidence and mortality
+
+```{r  fig.width=14, fig.height=5 , echo=FALSE}
+print(gr_3_pie_chart_final) 
+```
+
+*Figure 1: distribution of gender among incident cases and death cases*
+
+The age-standardized incidence rates (per 100,000 persons per year) were `r round(incidence_rate[31, "Std Rate (per 100 000)"], 1)` for men and `r round(incidence_rate[63, "Std Rate (per 100 000)"], 1)` for women. The standardized mortality rates (per 100,000 persons per year) were `r round(mortality_rate[31, "Std Rate (per 100 000)"], 1)` for men and `r round(mortality_rate[63, "Std Rate (per 100 000)"], 1)` for women.
+
+## Most common incident cancers
+
+The most commonly occurring cancers in Geneva are shown in Figure 2. For the 2016-2020 period, the most frequent cancer among men was `r tolower(incidence_rate_male_for_graph[1, "Cancer category"])`, with a standardized incidence rate of `r round(incidence_rate_male_for_graph[1, "Std Rate (per 100 000)"], 1)` per 100 000 person per year. It was followed by `r tolower(incidence_rate_male_for_graph[2, "Cancer category"])` (`r round(incidence_rate_male_for_graph[2, "Std Rate (per 100 000)"], 1)`/100 000). The five most common cancer in men (`r tolower(incidence_rate_male_for_graph[1, "Cancer category"])`, `r tolower(incidence_rate_male_for_graph[2, "Cancer category"])`, `r tolower(incidence_rate_male_for_graph[3, "Cancer category"])`, `r tolower(incidence_rate_male_for_graph[4, "Cancer category"])`, `r tolower(incidence_rate_male_for_graph[5, "Cancer category"])`) counted for `r round(percentage_top_5_incidence_male, 1)`% of all male cancer cases.
+
+Among women, the most frequent cancer was `r tolower(incidence_rate_female_for_graph[1, "Cancer category"])`, with an incidence rate of `r round(incidence_rate_female_for_graph[1, "Std Rate (per 100 000)"], 1)` per 100 000 person per year. The second most frequent cancer was `r tolower(incidence_rate_female_for_graph[2, "Cancer category"])` (`r round(incidence_rate_female_for_graph[2, "Std Rate (per 100 000)"], 1)`/100 000). The five most common cancer in women (`r tolower(incidence_rate_female_for_graph[1, "Cancer category"])`, `r tolower(incidence_rate_female_for_graph[2, "Cancer category"])`, `r tolower(incidence_rate_female_for_graph[3, "Cancer category"])`, `r tolower(incidence_rate_female_for_graph[4, "Cancer category"])`, `r tolower(incidence_rate_female_for_graph[5, "Cancer category"])`) counted for `r round(percentage_top_5_incidence_female, 1)`% of all female cancer cases.
+
+More men than women developed cancer. The predominance of males was associated with prostate and tobacco-related cancers. It is to be noted the importance of lung and bronchus cancer among women, linked to the increase of tobacco consumption among women in the latter half of the 20th century.
+
+```{r  fig.width=14, fig.height=5 , echo=FALSE}
+print(gr_6_incidence_final)
+```
+
+*Figure 2: Main incident cancer types by gender*
+
+## Major cause of cancer death
+
+Between 2016-2020 in Geneva, the most frequent cause of death (by cancer) among men was `r tolower(mortality_rate_male_for_graph[1, "Cancer category"])`, with an incidence rate of `r round(mortality_rate_male_for_graph[1, "Std Rate (per 100 000)"], 1)` per 100 000 person per year. The second most frequent cancer among men was `r tolower(mortality_rate_male_for_graph[2, "Cancer category"])` (`r round(mortality_rate_male_for_graph[2, "Std Rate (per 100 000)"], 1)`/100 000). The five most common cause of death by cancer in men (`r tolower(mortality_rate_male_for_graph[1, "Cancer category"])`, `r tolower(mortality_rate_male_for_graph[2, "Cancer category"])`, `r tolower(mortality_rate_male_for_graph[3, "Cancer category"])`, `r tolower(mortality_rate_male_for_graph[4, "Cancer category"])`, `r tolower(mortality_rate_male_for_graph[5, "Cancer category"])`) counted for `r round(percentage_top_5_mortality_male, 1)`% of all male cancer cases.
+
+The most frequent cause of death by cancer among women was `r tolower(mortality_rate_female_for_graph[1, "Cancer category"])`, with an incidence rate of `r round(mortality_rate_female_for_graph[1, "Std Rate (per 100 000)"], 1)` per 100 000 person per year. The second most frequent cancer among women was `r tolower(mortality_rate_female_for_graph[2, "Cancer category"])` (`r round(mortality_rate_female_for_graph[2, "Std Rate (per 100 000)"], 1)`/100 000). The five most common cause of death by cancer in women (`r tolower(mortality_rate_female_for_graph[1, "Cancer category"])`, `r tolower(mortality_rate_female_for_graph[2, "Cancer category"])`, `r tolower(mortality_rate_female_for_graph[3, "Cancer category"])`, `r tolower(mortality_rate_female_for_graph[4, "Cancer category"])`, `r tolower(mortality_rate_female_for_graph[5, "Cancer category"])`) counted for `r round(percentage_top_5_mortality_female, 1)`% of all male cancer cases.
+
+Figure 3 illustrates the main cancer cause of death by gender in Geneva for the period 2016-2020.
+
+```{r fig.show="hold", fig.width=14, fig.height=5, echo=FALSE}
+print(gr_9_mortality_final)
+```
+
+*Figure 3: main cancer cause of death by gender in Geneva for the period 2016-2020*
+
+The difference in order of ranking between incidence and mortality reflects the differing survivorship of patients with different cancers. For example, lung cancer is both common and quickly fatal and, therefore, ranks highly in both new cancers and cancer deaths. Pancreatic cancer is not common but is usually rapidly lethal, so its mortality ranking is higher than its incidence ranking.
+
+## Age at incidence
+
+The mean age at incidence was `r round(mean_age_incidence_male, 1)` years for men and `r round(mean_age_incidence_female, 1)` years for women. Incidence of cancer increases with age, reaching a pick after 80 years old in terms of incidence rate. Figure 4 shows age distribution according to gender and illustrates the distribution of specific incidence rates across age categories.
+
+```{r fig.show="hold", fig.width=14, fig.height=5 , echo=FALSE}
+gr_12_age_incidence 
+```
+
+*Figure 4: Age at incidence, specific incidence rates (represented by lines) and number of cancers by age (represented by bars)*
+
+## Age at death
+
+The mean age at death by cancer was `r round(mean_age_mortality_male, 1)` years for men and `r round(mean_age_mortality_female, 1)` years for women.
+
+Figure 4 shows age distribution according to gender and illustrates the distribution of specific incidence rates across age categories.
+
+```{r fig.show="hold", fig.width=14, fig.height=5 , echo=FALSE}
+gr_15_age_mortality 
+```
+
+*Figure 5: Age at death, specific incidence rates (represented by lines) and number of cancers by age (represented by bars)*
+
+# Incidence by cancer site
+
+Table 2 and 3 show the number of cases diagnosed between 2016 and 2020 by cancer type for men and women, as well as crude and standardized rates.
+
+Each year, `r table_incidence_rate_male$"Mean cases/year"[table_incidence_rate_male$"Cancer category" == "Prostate"]` men are diagnosed with prostate cancer.
+
+```{r, echo=FALSE}
+
+# Render the kable table with kableExtra
+ kable(table_incidence_rate_male_final, caption = "<b>Table 2: Number of cases and incidence rates for men") %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(5, background = "#edf0fc") %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#3f4166")
+
+
+```
+
+
+
+
+In Geneva's canton, `r table_incidence_rate_female$"Mean cases/year"[table_incidence_rate_female$"Cancer category" == "Breast"]` women are diagnosed every year with an invasive breast cancer.
+
+```{r, echo=FALSE}
+# "caption" argument gives the table a title
+
+kable(table_incidence_rate_female_final, caption = "<b>Table 3: Number of cases and incidence rates for women")%>%
+  column_spec(1, bold = T) %>%
+  column_spec(5, background = "#f3f7e4") %>%
+  row_spec(0, bold = T, color = "black", background = "#a5d411")
+
+
+
+```
+
+# Mortality by cancer site
+
+Table 4 and 5 show the number of death by cancer diagnosed between 2016 and 2020 among men and women in the Canton.
+
+Each year, `r table_mortality_rate_male$"Mean cases/year"[table_mortality_rate_male$"Cancer category" == "Lung and Bronchus"]` men die with lung cancer. It is the major cause of death in men.
+
+```{r, echo=FALSE}
+# "caption" argument gives the table a title
+
+kable(table_mortality_rate_male_final, caption = "<b>Table 4: Number of death and mortality rates for men")%>%
+  column_spec(1, bold = T) %>%
+  column_spec(5, background = "#edf0fc") %>%
+  row_spec(0, bold = T, color = "white", background = "#3f4166")
+
+```
+
+In Geneva's canton, `r table_mortality_rate_female$"Mean cases/year"[table_mortality_rate_female$"Cancer category" == "Breast"]` women die with an invasive breast cancer every year. It is nearly equal to the number of death recorded for lung cancer (`r table_mortality_rate_female$"Mean cases/year"[table_mortality_rate_female$"Cancer category" == "Lung and Bronchus"]`).
+
+```{r, echo=FALSE}
+# "caption" argument gives the table a title
+
+kable(table_mortality_rate_female_final, caption = "<b>Table 5: Number of death and mortality rates for women")%>%
+  column_spec(1, bold = T) %>%
+  column_spec(5, background = "#f3f7e4") %>%
+  row_spec(0, bold = T, color = "black", background = "#a5d411")
+
+
+```
+
+# Conclusions
+
+This reports aimed at describing the epidemiology of cancer in Geneva's canton for the period 2016-2020. It shows that the main cancer for men is `r tolower(incidence_rate_male_for_graph[1, "Cancer category"])` cancer while it is `r tolower(incidence_rate_female_for_graph[1, "Cancer category"])` for women. For both gender, `r tolower(incidence_rate_male_for_graph[2, "Cancer category"])`, `r tolower(incidence_rate_male_for_graph[3, "Cancer category"])` and `r tolower(incidence_rate_male_for_graph[4, "Cancer category"])` cancers are the four other major cancer types.
+
+The analysis presented in this document are not finished and the results are not considered as validated. 
+
+# Acknowledgments
+
+We would like to thank all the patients who make their data available to us, so that we can better represent the burden of cancer and improve cancer care in the canton in the future, for the trust they place in us.
+
+This document is the fruit of work or collaboration with numerous individuals and agencies, to whom the Registry would like to extend its warmest thanks:
+
+-   Doctors and other cancer notifiers from hospitals, radiotherapy centers and private practices
+
+-   Public and private anatomopathology laboratories
+
+-   The Geneva Cancer Screening Foundation
+
+-   Other Swiss cancer registries
+
+-   National Cancer Registry ONEC
+
+-   Wildsorf Foundation
+
+-   Geneva Cancer League
+
+-   Swiss Cancer League
+
+-   Swiss Federal Statistical Office (FSO)
+
+-   Office Cantonal de la Population (OCP)
+
+-   The IT services of the University of Geneva, in particular the IT Service of the Faculty of Medicine
+
+-   The various tumor registries

@@ -1,0 +1,1000 @@
+---
+title: "Cancer incidence in Geneva"
+author: "Evelyne Fournier"
+format: dashboard
+---
+
+```{python}
+# To readers
+# This code aims at computing standardised incidence rates of cancer based on Geneva Cancer Registry Data and see their evolution with time from 1971 to 2021.
+# In our database 
+# Gender is on the patient table. Patients are uniquely identified with an ID called PID
+# Tumors characteristics like age at incidence, year of incidence and type of cancer in ICD10 are on the tumor table. Tumor table contains patients' ID PID, which enables to make the linkage between the 2 tables
+# Population table of Geneva's canton was given by Federal Statistic Office
+# European standard population (1976) is used to compute age standardised rates
+```
+
+
+```{python}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+import pandas as pd
+import plotly.express as px
+import itables 
+import numpy as np
+import itertools
+# pip install jupyter
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Datafiles needed
+# Contains patient id pid and gender
+patient=pd.read_csv("data/patient.csv")
+patient
+
+# contains patient id pid, age at diagnosis as age, year of diagnosis as year, tumor icd10 code as icd10
+tumor=pd.read_csv("data/tumor.csv")
+tumor
+
+# contains number of inhabitants pop by gender year age
+pop_GE=pd.read_csv("data/pop_GE_1970_2021_Final.csv",  delimiter=",")
+pop_GE
+
+
+# Merge patient table to tumor table, to have the gender and tumor characteristics in the same file
+cancer=pd.merge(patient,tumor,how="inner",on="pid")
+cancer
+
+# Generate age category age_cat, period (based on year with 3 years span) and tumor category  tumor_category (obtained using ICD10 codes)
+
+# Définir les intervalles d'âge et les étiquettes
+bins_age = list(range(0, 90, 5)) + [float('inf')]
+labels = [f'{i}-{i+4}' for i in range(0, 85, 5)] + ['85+']
+
+# Définir les étiquettes numériques pour categorie_age
+numeric_labels = list(range(0, 90, 5))
+
+# Créer les catégories d'âge pour age_cat
+cancer['age_cat'] = pd.cut(cancer['age'], bins=bins_age, labels=numeric_labels, right=False)
+
+# Définir les intervalles de période
+bins_period = list(range(1971, 2021, 3)) + [float('inf')]
+
+# Définir les étiquettes numériques pour les périodes
+numeric_labels_period = list(range(1971, 2021, 3))
+
+# Créer les catégories d'âge pour les périodes
+cancer['period'] = pd.cut(cancer['year'], bins=bins_period, labels=numeric_labels_period, right=False)
+
+# création des catégories de cancer : tumor_category
+
+# Convertir les noms de colonnes en minuscules 
+cancer.columns = cancer.columns.str.lower()
+
+# Extraire les 3 premiers caractères de la colonne icd10 (C50.8 devient C50)
+cancer['icd10'] = cancer['icd10'].str[:3]
+
+# Convertir gender en catégorie
+cancer['gender'] = cancer['gender'].astype('category')
+
+# Créer la colonne tumor_category
+cancer['tumor_category'] = np.select(
+    [
+        cancer['icd10'].isin(["C00", "C01", "C02", "C03", "C04", "C05", "C06", "C07", "C08", "C09", "C10", "C11", "C12", "C13", "C14"]),
+        cancer['icd10'] == "C15",
+        cancer['icd10'] == "C16",
+        cancer['icd10'] == "C17",
+        cancer['icd10'].isin(["C18", "C19", "C20"]),
+        cancer['icd10'] == "C21",
+        cancer['icd10'] == "C22",
+        cancer['icd10'].isin(["C23", "C24"]),
+        cancer['icd10'] == "C25",
+        cancer['icd10'] == "C26",
+        cancer['icd10'] == "C32",
+        cancer['icd10'].isin(["C33", "C34"]),
+        cancer['icd10'] == "C38",
+        cancer['icd10'].isin(["C40", "C41"]),
+        cancer['icd10'] == "C43",
+        cancer['icd10'] == "C45",
+        cancer['icd10'].isin(["C47", "C49"]),
+        cancer['icd10'] == "C50",
+        cancer['icd10'] == "C53",
+        cancer['icd10'].isin(["C54", "C55"]),
+        cancer['icd10'].isin(["C56", "C57"]),
+        cancer['icd10'] == "C61",
+        cancer['icd10'] == "C62",
+        cancer['icd10'] == "C64",
+        cancer['icd10'].isin(["C65", "C66", "C68"]),
+        cancer['icd10'] == "C67",
+        cancer['icd10'].isin(["C70", "C71", "C72"]),
+        cancer['icd10'] == "C73",
+        cancer['icd10'] == "C80",
+        cancer['icd10'] == "C81",
+        cancer['icd10'].isin(["C82", "C83", "C84", "C85", "C96"]),
+        cancer['icd10'] == "C90",
+        cancer['icd10'] == "C91",
+        cancer['icd10'] == "C92",
+        cancer['icd10'].isin(["C93", "C94", "C95"])
+    ],
+    [
+        "C00-C14", "C15", "C16", "C17", "C18-C20", "C21", "C22", "C23,C24", "C25", "C26,C80", "C32", "C33-C34", "C38,C45",
+        "C40,C41", "C43", "C38,C45", "C47,C49", "C50", "C53", "C54,C55", "C56,C57", "C61", "C62", "C64", "C65-C66,C68",
+        "C67", "C70-C72", "C73", "C26,C80", "C81", "C82-85, C96", "C90", "C91", "C92", "C93-95"
+    ],
+    default="Other"
+)
+
+# Convertir tumor_category  en catégorie
+cancer['tumor_category'] = cancer['tumor_category'].astype('category')
+#cancer['period'] = cancer['period'].astype('category')
+
+
+# Calculer le nombre de patients par genre, catégorie d'âge et période
+cancer_final = cancer.groupby(['gender', 'age_cat', 'period','tumor_category']).size().reset_index(name='number_of_patients')
+# Calculer le nombre de patients par genre, catégorie d'âge, période et type de tumeur
+cancer_grouped = cancer.groupby(['gender', 'age_cat', 'period', 'tumor_category']).size().reset_index(name='number_of_patients')
+
+# Obtenir toutes les combinaisons possibles
+age_cat_unique = cancer['age_cat'].unique()
+period_unique = cancer['period'].unique()
+gender_unique = cancer['gender'].unique()
+tumor_category_unique = cancer['tumor_category'].unique()
+
+# Créer le produit cartésien de toutes les combinaisons # thanks chatgpt
+all_combinations = pd.DataFrame(
+    itertools.product(gender_unique, age_cat_unique, period_unique, tumor_category_unique),
+    columns=['gender', 'age_cat', 'period', 'tumor_category']
+)
+
+# Fusionner avec les données groupées
+cancer_final = all_combinations.merge(cancer_grouped, 
+                                      on=['gender', 'age_cat', 'period', 'tumor_category'], 
+                                      how='left')
+
+# Remplir les valeurs manquantes avec 0 pour 'number_of_patients'
+cancer_final['number_of_patients'] = cancer_final['number_of_patients'].fillna(0)
+
+# Afficher le résultat
+print(cancer_final)
+
+
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# chekc if all categories are present (i need to have exactly the same number of rows by gender, age_cat, tumor_cat and period.)
+# Count the number of rows for each combination
+row_counts = cancer_final.groupby(['gender', 'age_cat', 'period', 'tumor_category']).size().reset_index(name='row_count')
+
+# Check if all combinations have exactly 1 row
+missing_or_extra = row_counts[row_counts['row_count'] != 1]
+
+if missing_or_extra.empty:
+    print("All combinations have exactly 1 row.")
+else:
+    print("Some combinations have missing or extra rows.")
+    print(missing_or_extra)
+
+
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Get the expected number of combinations
+expected_combinations = len(gender_unique) * len(age_cat_unique) * len(period_unique) * len(tumor_category_unique)
+
+# Get the actual number of unique combinations
+actual_combinations = cancer_final.groupby(['gender', 'age_cat', 'period', 'tumor_category']).ngroups
+
+if actual_combinations == expected_combinations:
+    print("All expected combinations are present.")
+else:
+    print(f"Some combinations are missing. Expected: {expected_combinations}, Actual: {actual_combinations}")
+
+```
+
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Create a two-way table to check that there is an equal number of rows for each cell of the 2 way table 
+gender_age_table = pd.crosstab(
+    index=cancer_final['age_cat'],  # Rows are age categories
+    columns=cancer_final['gender'],  # Columns are genders
+    margins=True  # Adds totals for rows and columns
+)
+
+# Display the table
+print(gender_age_table)
+
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Create a two-way table to check that there is an equal number of rows for each cell of the 2 way table 
+gender_period_table = pd.crosstab(
+    index=cancer_final['period'],  # Rows are periods
+    columns=cancer_final['gender'],  # Columns are genders
+    margins=True  # Adds totals for rows and columns
+)
+
+# Display the table
+print(gender_period_table)
+
+```
+
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Generate the total tumor category
+# Compute the total sum of `number_of_patients` by `age_cat`, `period`, and `gender`
+total_sum = cancer_final.groupby(['age_cat', 'period', 'gender'])['number_of_patients'].sum().reset_index()
+
+# Add a new column for `tumor_category` with the value "Total"
+total_sum['tumor_category'] = "Total"
+
+# Append the totals to the original dataframe
+cancer_final_with_total = pd.concat([cancer_final, total_sum], ignore_index=True)
+
+print(total_sum)
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Create a two-way table to check that there is an equivalent number of rows for each cell of the 2 way table 
+gender_tumor_category_table = pd.crosstab(
+    index=cancer_final_with_total['tumor_category'],  # Rows are age categories
+    columns=cancer_final_with_total['gender'],  # Columns are genders
+    margins=True  # Adds totals for rows and columns
+)
+
+# Display the table
+print(gender_tumor_category_table)
+
+# Everything seems fine, row total exists with same number of rows as other cancer categories
+
+```
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Now is time to focus on population table, I need to see how it is (age ranges from 0 to 99)
+print(pop_GE)
+```
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Do the same thing for population file : get the number of inhabitant per period, gender and age category
+# Define 3 years period
+pop_GE['period'] = pd.cut(pop_GE['year'], bins=bins_period, labels=numeric_labels_period, right=False)
+
+# Define 5 years age category
+pop_GE['age_cat'] = pd.cut(pop_GE['age'], bins=bins_age, labels=numeric_labels, right=False)
+
+# Convertir gender from integer to category type
+pop_GE['gender'] = pop_GE['gender'].astype('category')
+
+# Summ the population by age cat, gender and periode
+
+# Grouping by 'age_cat', 'period', and 'gender' and calculating the sum of 'pop'
+
+pop_GE_final = pop_GE.groupby(['age_cat', 'period', 'gender'])['pop'].sum().reset_index()
+
+
+# We now have the poulation file by age_cat, gender and period, same format as cases files => time to merge
+print(pop_GE_final)
+```
+
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+
+# Merge of population and cases files 
+database_final=pd.merge(cancer_final_with_total,pop_GE_final,how="inner",on=['age_cat', 'period', 'gender'])
+print(database_final)
+# gender age_cat period tumor_category  number_of_patients      pop
+#0          1      65   1980            C67                  13  16853.0
+#1          1      65   1980    C82-85, C96                   6  16853.0
+#2          1      65   1980            C50                   1  16853.0
+#3          1      65   1980            C22                  11  16853.0
+#4          1      65   1980          Other                   5  16853.0
+#...      ...     ...    ...            ...                 ...      ...
+#21415      2      85   2013          Total                 415  25399.5
+#21416      1      85   2016          Total                 386  13494.5
+#21417      2      85   2016          Total                 493  27505.5
+#21418      1      85   2019          Total                 391  14964.0
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# European Standard Population, needed for standardised rates computatio
+# Load the European standard population from the Stata file
+european_standard_population = pd.read_stata("data/refeurope.dta")
+# Renaming the column `clage` to `age_cat`
+european_standard_population = european_standard_population.rename(columns={'clage': 'age_cat'})
+print(european_standard_population)
+#   age_cat     pop
+#0         0  8000.0
+#1         5  7000.0
+#2        10  7000.0
+#3        15  7000.0
+#4        20  7000.0
+#5        25  7000.0
+#6        30  7000.0
+```
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+
+# Merge database_final with european_standard_population, suffixe _standard for variable pop coming from european std pop
+merged_data = database_final.merge(
+    european_standard_population, 
+    on='age_cat', 
+    suffixes=('', '_standard')
+)
+
+# Calculate Crude Rate (cases per 100,000 population)
+rate_multiplier = 100000
+merged_data['crude_rate'] = (merged_data['number_of_patients'] / merged_data['pop']) * rate_multiplier
+
+
+# Standardised rates computation 
+# I did not find a package that would do it like in R or Stata so I asked chatgpt to help me compute it "by hand"
+
+# Total European Standard Population
+total_standard_pop = european_standard_population['pop'].sum()
+
+# Calculate Weighted Rate
+merged_data['weighted_rate'] = (merged_data['crude_rate'] * merged_data['pop_standard']) / total_standard_pop
+
+# Compute Standardized Incidence Rates (SIR) by gender, period, and tumor_category
+sir_results = merged_data.groupby(['gender', 'period', 'tumor_category'])['weighted_rate'].sum().reset_index()
+
+# Rename column for clarity
+sir_results.rename(columns={'weighted_rate': 'standardized_incidence_rate'}, inplace=True)
+
+
+# Compute additional statistics: total cases, at-risk population, and raw incidence rate
+additional_stats = merged_data.groupby(['gender', 'period', 'tumor_category']).agg(
+    total_cases=('number_of_patients', 'sum'),
+    total_population=('pop', 'sum')
+).reset_index()
+
+# Calculate raw incidence rate (cases per 100,000 population)
+additional_stats['raw_incidence_rate'] = (additional_stats['total_cases'] / additional_stats['total_population']) * 100000
+
+# Merge these statistics with the SIR results
+sir_results = merged_data.groupby(['gender', 'period', 'tumor_category'])['weighted_rate'].sum().reset_index()
+sir_results.rename(columns={'weighted_rate': 'standardized_incidence_rate'}, inplace=True)
+sir_results = sir_results.merge(additional_stats, on=['gender', 'period', 'tumor_category'])
+
+# Add a new column `tumor_category_txt` based on the values in `tumor_category`
+# This enables to have a clear tumor text instead of ICD10 codes
+sir_results['tumor_category_txt'] = sir_results['tumor_category'].map({
+    "C00-C14": "Lip, Oral Cavity, and Pharynx",
+    "C15": "Esophagus",
+    "C16": "Stomach",
+    "C17": "Small Intestine",
+    "C18-C20": "Colon and Rectum",
+    "C21": "Anus and Anal Canal",
+    "C22": "Liver",
+    "C23,C24": "Gallbladder",
+    "C25": "Pancreas",
+    "C32": "Larynx",
+    "C33-C34": "Lung and Bronchus",
+    "C38,C45": "Pleura and Mesothelioma",
+    "C40,C41": "Bone",
+    "C43": "Skin Melanoma",
+    "C47,C49": "Soft Tissue",
+    "C50": "Breast",
+    "C53": "Cervix Uteri",
+    "C54,C55": "Corpus Uteri",
+    "C56,C57": "Ovary",
+    "C61": "Prostate",
+    "C62": "Testis",
+    "C64": "Kidney",
+    "C65-C66,C68": "Urinary tract",
+    "C67": "Bladder",
+    "C70-C72": "Central Nervous System",
+    "C73": "Thyroid",
+    "C81": "Hodgkin Lymphoma",
+    "C82-85, C96": "Non-Hodgkin Lymphoma",
+    "C90": "Multiple Myeloma",
+    "C91": "Chronic Lymphocytic Leukemia",
+    "C92": "Acute Myeloid Leukemia",
+    "C93-95": "Leukemia",
+    "C26,C80": "Unknown primary site",
+    "Other": "Other",
+    "Total": "Total"
+})
+
+# Display the results
+# Print the results to the console
+print(sir_results)
+# seems to be pretty close to what i usually have in stata
+# We now have all the statistics we want : number of cases, raw and standardised incidence rates per gender, period and cancer category
+# Time to prepare the indicators that will be published on GitHub
+```
+
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Preparation of Git Hub Pages
+# The welcome page of the github page will focus on 2019-2021 period (period==2019)
+
+# Preparation of value boxes values
+
+# number of total cancer for period 2019-2021 - For men
+# incidence rate of total cancer for period 2019-2021 - For men
+# Filter for men (gender=1) and period 2019 for the "Total" category
+
+total_cancer_men_2019 = sir_results[
+    (sir_results['gender'] == 1) & 
+    (sir_results['period'] == 2019) & 
+    (sir_results['tumor_category_txt'] == 'Total')
+]
+
+# Extract the values for men
+total_cases_men_2019 = total_cancer_men_2019['total_cases'].values[0]
+# get the mean number of cases per year, rounded (/3 beacause we have a 3 years span)
+total_cases_men_2019 = total_cases_men_2019 // 3
+incidence_rate_men_2019 = total_cancer_men_2019['standardized_incidence_rate'].values[0]
+# SIR rounded to 1 decimal place
+incidence_rate_men_2019 = round(incidence_rate_men_2019, 1)
+
+# number of total cancer for period 2019-2021 - For women
+# incidence rate of total cancer for period 2019-2021 - For women
+
+total_cancer_women_2019 = sir_results[
+    (sir_results['gender'] == 2) & 
+    (sir_results['period'] == 2019) & 
+    (sir_results['tumor_category_txt'] == 'Total')
+]
+
+# Extract the values for women
+total_cases_women_2019 = total_cancer_women_2019['total_cases'].values[0]
+total_cases_women_2019 = total_cases_women_2019 // 3
+
+incidence_rate_women_2019 = total_cancer_women_2019['standardized_incidence_rate'].values[0]
+# SIR rounded to 1 decimal place
+incidence_rate_women_2019 = round(incidence_rate_women_2019, 1)
+
+# Number of cases of the most frequent cancer for men (based on standardised incidence rate)
+# Incidence rate of the most frequent cancer for men, rounded 1 digit
+# Filter the data for men (gender=1) and period 2019, excluding the "Total" and "Other" categories
+filtered_cancers = sir_results[
+    (sir_results['gender'] == 1) &
+    (sir_results['period'] == 2019) &
+    (~sir_results['tumor_category_txt'].isin(['Total', 'Other']))
+]
+
+# Get the cancer with the highest standardized_incidence_rate
+max_incidence_cancer_men = filtered_cancers.loc[filtered_cancers['standardized_incidence_rate'].idxmax()]
+
+
+# Extract the required values
+max_incidence_rate_men = max_incidence_cancer_men['standardized_incidence_rate']
+max_incidence_cancer_name_men = max_incidence_cancer_men['tumor_category_txt']
+# Round to 1 decimal place
+max_incidence_rate_men = round(max_incidence_rate_men, 1)
+
+
+
+# Number of cases of the most frequent cancer for women (based on standardised incidence rate)
+# Incidence rate of the most frequent  cancer for women, rounded  1 digit
+# Filter the data for women (gender=2) and period 2019, excluding the "Total" and "Other" categories
+filtered_cancers = sir_results[
+    (sir_results['gender'] == 2) &
+    (sir_results['period'] == 2019) &
+    (~sir_results['tumor_category_txt'].isin(['Total', 'Other']))
+]
+
+# Get the cancer with the highest standardized_incidence_rate
+max_incidence_cancer_women = filtered_cancers.loc[filtered_cancers['standardized_incidence_rate'].idxmax()]
+
+
+# Extract the required values
+max_incidence_rate_women = max_incidence_cancer_women['standardized_incidence_rate']
+max_incidence_cancer_name_women = max_incidence_cancer_women['tumor_category_txt']
+
+# Round to 1 decimal place
+max_incidence_rate_women = round(max_incidence_rate_women, 1)
+
+```
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# Graphs for page 1
+# Graph bar of the ten major cancer categories for men
+
+# Filter for men (gender=1), period=2019, excluding 'Total' and 'Other' categories
+filtered_data = sir_results[
+    (sir_results['gender'] == 1) &
+    (sir_results['period'] == 2019) &
+    (~sir_results['tumor_category_txt'].isin(['Total', 'Other']))
+]
+
+# Sort by standardized_incidence_rate and select the top 10 categories
+top_cancers = filtered_data.nlargest(10, 'standardized_incidence_rate')
+
+# Create the horizontal bar chart
+top10_men = px.bar(
+    top_cancers,
+    x='standardized_incidence_rate',
+    y='tumor_category_txt',
+    orientation='h',
+    title='Most frequent incident cancer (Men, 2019)',
+    labels={'standardized_incidence_rate': 'Standardized Incidence Rate (per 100 000 / year)', 'tumor_category_txt': 'Cancer type'},
+    color_discrete_sequence=["#85aff2"]  # Specify the color for the bars
+)
+
+top10_men.update_layout(yaxis={'categoryorder': 'total ascending'})
+top10_men.show()
+```
+
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+
+# Still graph for page 1, women
+# Graph bar of the ten major cancer categories for women
+
+# Filter for women (gender=2), period=2019, excluding 'Total' and 'Other' categories
+filtered_data = sir_results[
+    (sir_results['gender'] == 2) &
+    (sir_results['period'] == 2019) &
+    (~sir_results['tumor_category_txt'].isin(['Total', 'Other']))
+]
+
+# Sort by standardized_incidence_rate and select the top 10 categories
+top_cancers = filtered_data.nlargest(10, 'standardized_incidence_rate')
+
+# Create the horizontal bar chart
+top10_women = px.bar(
+    top_cancers,
+    x='standardized_incidence_rate',
+    y='tumor_category_txt',
+    orientation='h',
+    title='Most frequent incident cancer (Women, 2019)',
+    labels={'standardized_incidence_rate': 'Standardized Incidence Rate (per 100 000 / year)', 'tumor_category_txt': 'Cancer type'},
+    color_discrete_sequence=["#fb9d4d"]  # Specify the color for the bars
+)
+
+top10_women.update_layout(yaxis={'categoryorder': 'total ascending'})
+top10_women.show()
+```
+
+```{python}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+
+# Graph for page 2, evolution for men
+# 2 graphs because of different SIR : one for prostate and the other for the 6 other major cancer sites
+
+# Filter for men (gender=1) and prostate cancer
+filtered_data = sir_results[
+    (sir_results['gender'] == 1) &
+    (sir_results['tumor_category'] == "C61") 
+]
+
+# Create the bar line
+Graph_evo_C61_men =  px.line(
+    filtered_data,
+    x='period',
+    y='standardized_incidence_rate',
+    title='Incidence evolution of prostate cancer',
+    labels={'standardized_incidence_rate': 'Standardized Incidence Rate', 'period': 'Period'},
+    line_shape='linear'
+)
+
+# Updating the line color
+Graph_evo_C61_men.update_traces(line=dict(color='#1d2c3a'))
+Graph_evo_C61_men.update_layout(
+    yaxis=dict(range=[0, None])  # Set the y-axis range to start at 0
+)
+
+
+# Updating the x-axis to range from 1971 to 2019
+# Update the x-axis ticks to show markers every 3 years
+Graph_evo_C61_men.update_layout(
+    xaxis=dict(
+        range=[1971, 2020],
+        tickmode='array',
+        tickvals=list(range(1971, 2020, 3)),  # Generate tick values every 3 years
+        ticktext=[str(year) for year in range(1971, 2019, 3)],  # Convert tick values to strings
+        tickangle=-45  # Set tick text angle to 45 degrees
+    )
+)
+
+```
+
+```{python}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# This is the 2nd sery of graph for page 2 : evolution for the 6th most frequent cancer category after prostate
+# Filter for men (gender=1) and specific tumor categories
+filtered_data = sir_results.query(
+    'gender == 1 & (tumor_category == "C00-C14" | tumor_category == "C33-C34" | tumor_category == "C18-C20" | tumor_category == "C43" | tumor_category == "C67" | tumor_category == "C22")'
+)
+
+
+# Create the bar line
+Graph_evo_top6_men =  px.line(
+    filtered_data,
+    x='period',
+    y='standardized_incidence_rate',
+    title='Incidence rate (Men)',
+    color="tumor_category_txt",
+    labels={'standardized_incidence_rate': 'Standardized Incidence Rate', 'period': 'Period', "tumor_category_txt" : ""},
+    line_shape='linear'
+)
+
+# Ensuring the y-axis starts from 0
+Graph_evo_top6_men.update_layout(
+    yaxis=dict(range=[0, None])  # Set the y-axis range to start at 0
+)
+
+# Updating the x-axis to range from 1971 to 2019
+# Update the x-axis ticks to show markers every 3 years
+
+# Adjust layout for better legend visibility
+Graph_evo_top6_men.update_layout(
+    legend=dict(
+       font=dict(size=10)  # Adjust font size for better readability
+    ),
+    xaxis=dict(
+        range=[1971, 2020],
+        tickmode='array',
+        tickvals=list(range(1971, 2020, 3)),  # Generate tick values every 3 years
+        ticktext=[str(year) for year in range(1971, 2019, 3)],  # Convert tick values to strings
+        tickangle=-45  # Set tick text angle to 45 degrees
+    )
+)
+# tumor type might
+
+Graph_evo_top6_men.show()
+
+```
+
+
+```{python}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+
+# Graph for page 2, evolution for women
+# 2 graphs because of different SIR : one for breast and the other for the 6 other major cancer sites
+
+# Filter for men (gender=1) and prostate cancer
+filtered_data = sir_results[
+    (sir_results['gender'] == 2) &
+    (sir_results['tumor_category'] == "C50") 
+]
+
+# Create the bar line
+Graph_evo_C50_women =  px.line(
+    filtered_data,
+    x='period',
+    y='standardized_incidence_rate',
+    title='Incidence evolution of breast cancer',
+    labels={'standardized_incidence_rate': 'Standardized Incidence Rate', 'period': 'Period'},
+    line_shape='linear'
+)
+
+# Updating the line color and ensuring the y-axis starts from 0
+Graph_evo_C50_women.update_traces(line=dict(color='#fb9d4d'))
+Graph_evo_C50_women.update_layout(
+    yaxis=dict(range=[0, None])  # Set the y-axis range to start at 0
+)
+Graph_evo_C50_women.update_layout(
+    yaxis=dict(range=[0, None])  # Set the y-axis range to start at 0
+)
+
+# Updating the x-axis to range from 1971 to 2019
+# Update the x-axis ticks to show markers every 3 years
+Graph_evo_C50_women.update_layout(
+    xaxis=dict(
+        range=[1971, 2020],
+        tickmode='array',
+        tickvals=list(range(1971, 2020, 3)),  # Generate tick values every 3 years
+        ticktext=[str(year) for year in range(1971, 2019, 3)],  # Convert tick values to strings
+        tickangle=-45  # Set tick text angle to 45 degrees
+    )
+)
+Graph_evo_C50_women.show()
+```
+
+```{python}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+# This is the 2nd sery of graph for page 2 : evolution for the 6th most frequent cancer category after prostate
+# Filter for men (gender=1) and specific tumor categories
+filtered_data = sir_results.query(
+    'gender == 2 & ( tumor_category == "C33-C34" | tumor_category == "C18-C20" | tumor_category == "C43" | tumor_category == "C54,C55" | tumor_category == "C73"  | tumor_category == "C56,C57")'
+)
+
+
+# Create the bar line
+Graph_evo_top6_women =  px.line(
+    filtered_data,
+    x='period',
+    y='standardized_incidence_rate',
+    title='Incidence rate (Women)',
+    color="tumor_category_txt",
+    labels={'standardized_incidence_rate': 'Standardized Incidence Rate', 'period': 'Period', "tumor_category_txt" : ""},
+    line_shape='linear'
+)
+
+Graph_evo_top6_women.update_layout(
+    yaxis=dict(range=[0, None])  # Set the y-axis range to start at 0
+)
+
+# Updating the x-axis to range from 1971 to 2019
+# Update the x-axis ticks to show markers every 3 years
+Graph_evo_top6_women.update_layout(
+        legend=dict(
+       font=dict(size=10)  # Adjust font size for better readability
+    ),
+    xaxis=dict(
+        range=[1971, 2020],
+        tickmode='array',
+        tickvals=list(range(1971, 2020, 3)),  # Generate tick values every 3 years
+        ticktext=[str(year) for year in range(1971, 2019, 3)],  # Convert tick values to strings
+        tickangle=-45  # Set tick text angle to 45 degrees
+    )
+)
+
+
+Graph_evo_top6_women.show()
+
+```
+
+
+```{python, echo=False}
+#| warning: false
+#| echo: false
+#| output: false
+#| include: false
+
+#https://icons.getbootstrap.com/
+```
+
+
+# Cancer in Geneva (2019-2021)
+
+## Row 1 {height=30%}
+::: {.valuebox icon="person-standing" color="#85aff2" title="Men"}
+
+Annual number of cases
+<span style="font-size: 1.8em; font-weight: bold;">`{python} str(total_cases_men_2019)`</span>
+
+Incidence rate (per 100 000)
+<span style="font-size: 1.2em;">`{python} str(incidence_rate_men_2019)`</span>
+
+
+:::
+
+
+::: {.valuebox icon="clipboard-pulse" color="#85aff2" title=""}
+
+Most frequent
+
+<span style="font-size: 1.8em;">`{python} str(max_incidence_cancer_name_men)`</span>
+
+Incidence rate (per 100 000)
+<span style="font-size: 1.2em; font-weight: bold;">`{python} str(max_incidence_rate_men)`</span>
+
+:::
+
+::: {.valuebox icon="person-standing-dress" color="#fb9d4d" title="Women"}
+
+Annual number of cases
+<span style="font-size: 1.8em; font-weight: bold;">`{python} str(total_cases_women_2019)`</span>
+
+Incidence rate (per 100 000)
+<span style="font-size: 1.2em;">`{python} str(incidence_rate_women_2019)`</span>
+:::
+
+
+::: {.valuebox icon="clipboard-pulse" color="#fb9d4d" title=""}
+
+Most frequent
+
+<span style="font-size: 1.8em;">`{python} str(max_incidence_cancer_name_women)`</span>
+
+Incidence rate (per 100 000)
+<span style="font-size: 1.2em; font-weight: bold;">`{python} str(max_incidence_rate_women)`</span>
+
+:::
+
+## Row 2 {height=50%}
+### {width=50%}
+
+```{python}
+top10_men
+```
+### {width=50%}
+
+```{python}
+top10_women
+```
+
+## Row 3 {height=20%}
+Prostate cancer is the most common cancer among men, while breast cancer holds this distinction among women, with respective incidence rates of 131.1 and 135.2 cases per 100,000 inhabitants per year. For both sexes, lung and bronchus cancer, colorectal cancer, and melanoma of the skin are the next three most incident cancer types.
+
+# Evolution 1971-2021
+
+## Row 1 {height=0%}
+
+## Row 2 {height=100%}
+### {width=50%}
+
+Incidence evolution for men
+
+```{python}
+Graph_evo_C61_men
+```
+
+
+```{python}
+Graph_evo_top6_men
+```
+
+
+
+### {width=50%}
+
+Incidence evolution for women
+
+```{python}
+Graph_evo_C50_women
+```
+
+
+```{python}
+Graph_evo_top6_women
+```
+
+# Interpretation
+
+- **Prostate**
+
+For **prostate cancer**, several changes of patterns are observed and could be interpreted as follows:
+
+  - **Initial Increase (1971–1980s):**
+    There is a gradual increase in the standardized incidence rate during the 1970s and 1980s. This could be due to improved cancer detection methods, awareness, improvement in cancer registration in the cancer registry, or an actual rise in cases.
+
+  - **Significant Rise (1990s):**
+    The incidence rate shows a steep increase during the 1990s, peaking around 2000. This spike could be associated with the introduction of prostate-specific antigen (PSA) testing, which became widely adopted in the 1990s and significantly increased the detection of prostate cancer.
+
+  - **Plateau and Decline (2000–2010s):**
+    Following the peak, the incidence rate stabilizes and then slightly decreases in the 2000s. This could indicate changes in screening guidelines or a decline in overdiagnosis due to evolving recommendations around PSA testing.
+
+  - **Recent Fluctuations (2010s):**
+    The graph shows some fluctuations in the last decade, with a rise around 2016 followed by a slight decline by 2019. These variations could reflect changes in healthcare policies, diagnostic practices, or population demographics.
+
+<br><br>
+
+- **Breast**
+
+The evolution of standardized incidence rates for **breast cancer** shown in the graph suggests the following observations:
+
+  - **Stability (1971–1985):**
+    The incidence rates remain relatively stable during this period, suggesting no major changes in detection methods, screening programs, or risk factors.
+
+  - **Gradual Increase (1985–1995):**
+    A steady increase in standardized incidence rates begins in the mid-1980s. This could be associated with the introduction and widespread adoption of mammography screening programs, which often lead to an initial increase in detection rates due to the identification of previously undiagnosed cases.
+
+  - **Peak and Stabilization (1995–2010):**
+    Incidence rates reach a peak in the late 1990s and then stabilize during the 2000s. This plateau might indicate that the effects of widespread screening had leveled off, with most cases being detected early due to established screening programs.
+
+  - **Recent Slight Increase (2010–2019):**
+    A modest increase in rates in the last decade may reflect improvements in diagnostic techniques, changes in population behaviors (e.g., delayed childbearing, use of hormone replacement therapy), or increased awareness and health-seeking behavior.
+
+    <br><br>
+
+- **Lung and Bronchus**
+
+Among men, lung and bronchus cancer show a steady decline over time, reflecting the success of anti-tobacco campaigns and a significant reduction in smoking prevalence. In contrast, women exhibit a sharp increase in lung and bronchus cancer rates during the same period. What could explain these trends?
+
+  - **Decline in Men:**
+    The steady decrease in lung cancer among men can be attributed to a combination of public health initiatives, such as anti-smoking campaigns, higher taxes on tobacco products, restrictions on smoking in public spaces, and greater awareness of the health risks of smoking.  
+    Changes in smoking habits among men, particularly starting in the 1960s and 1970s, have had a delayed impact on cancer rates due to the long latency period of lung cancer development.
+
+  - **Increase in Women:**
+    The rise in lung cancer rates among women may be linked to the later adoption of smoking by women, which peaked several decades after men. This delay is reflected in the corresponding increase in lung cancer cases.  
+    Tobacco companies historically targeted women with marketing campaigns that associated smoking with independence and sophistication, contributing to higher smoking rates among women in the mid-20th century.  
+    The persistence of smoking among some female cohorts and the latency effect of tobacco-related cancers are key factors in the continued rise.
+
+  - **Conclusion:**
+    These contrasting trends illustrate the long-term effects of smoking behaviors on lung cancer incidence. The success of anti-tobacco measures in men highlights the importance of sustained public health interventions, while the increase among women underscores the need for gender-specific strategies to combat smoking and reduce the associated cancer burden.
+
+
+# Data Download
+
+The data used in this dashboard can be downloaded in CSV format below:
+```{python}
+itables.show(sir_results, caption="Cancer incidence rates 1971-2019", buttons=["csvHtml5"])
+```
+
+# Data origin
+The data presented on this dashboard are extracted from Geneva's cancer registry database (more about cancer registries on the following [YouTube page](https://youtu.be/zlV6BYoIwCA))
+
+
+The Geneva Cancer Registry (GCR), established in 1970, collects information on all cases of cancer diagnosed within the population of the canton of Geneva. It is the oldest Registry in Switzerland, and one of the oldest in Europe. Data collected by the GCR enables conduction of epidemiological research on cancer, with specific regard to the following: risk factors, evaluation of screening programs and prevention measures, access and quality of care, as well as the effectiveness of treatments. The GCR responds to requests for epidemiological investigations by the local health authorities (e.g. Direction Générale de la Santé) and is involved in several multidisciplinary cancer networks, which include health professionals (from both the public and the private sectors) and patients. The Registry collaborates with national and international studies, on differences within the country, and among countries, in quality of care and survival. The GCR personnel are also involved in teaching undergraduate students, lecturing in workshops, postgraduate and MOOC courses, as well as supervising the Master program, and thesis for the Doctorate in Medicine. In addition, the GCR plays an important role in cancer promotion, registration and epidemiology at national level, having initiated the creation of the National Institute for Cancer Epidemiology and Registration (NICER).
+
+
+# Acknowledgments
+
+Thank to all The Graph Network team for all this incredible course. The amount of knowledge that you shared is unvaluable. 
+
